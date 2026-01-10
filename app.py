@@ -42,7 +42,7 @@ def get_issue(issue_key):
     return r.json() if r.status_code == 200 else None
 
 # ---------------- UI ----------------
-st.title("🐞 Jira Defect Creator from Test Ticket")
+st.title("🐞 Defect Creator")
 
 test_ticket = st.text_input("Test Ticket Number (e.g. CT-123)")
 failed_step = st.text_input("Failed Test Step Number")
