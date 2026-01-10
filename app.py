@@ -51,7 +51,7 @@ uploaded_files = st.file_uploader(
 # ---------------------------
 if st.button("🚀 Create Defect"):
 
-    if not test_ticket or not failed_step or not summary:
+    if not test_ticket or not failed_step :
         st.error("Please fill all mandatory fields (*)")
         st.stop()
 
@@ -101,7 +101,7 @@ if st.button("🚀 Create Defect"):
         "fields": {
             "project": {"key": PROJECT_KEY},
             "issuetype": {"name": ISSUE_TYPE},
-            "summary": summary,
+           
             "description": description_adf,
 
             # Priority (SYSTEM FIELD)
