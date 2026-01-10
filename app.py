@@ -1,135 +1,174 @@
 import streamlit as st
 import requests
-import base64
+import os
+from requests.auth import HTTPBasicAuth
 
-# ---------------- CONFIG ----------------
-JIRA_BASE_URL = st.secrets["JIRA_BASE_URL"]
-JIRA_EMAIL = st.secrets["JIRA_EMAIL"]
-JIRA_API_TOKEN = st.secrets["JIRA_API_TOKEN"]
-
+# ---------------------------
+# CONFIGURATION
+# ---------------------------
+JIRA_BASE_URL = "https://mandg.atlassian.net"
 PROJECT_KEY = "CT"
 ISSUE_TYPE = "Defect"
 
-SEVERITY_FIELD_ID = "customfield_10260"  # 🔴 replace with actual ID
+# 🔴 UPDATE THESE WITH REAL FIELD IDS
+TEST_PHASE_FIELD_ID = "customfield_10245"   # Test Phase
+SEVERITY_FIELD_ID = "customfield_10260"     # Severity
 
-# ---------------- AUTH ----------------
-auth_string = f"{JIRA_EMAIL}:{JIRA_API_TOKEN}"
-auth_bytes = base64.b64encode(auth_string.encode()).decode()
+# ---------------------------
+# STREAMLIT UI
+# ---------------------------
+st.set_page_config(page_title="Jira Defect Creator", layout="centered")
+st.title("🐞 Create Jira Defect from Test Ticket")
 
-HEADERS = {
-    "Authorization": f"Basic {auth_bytes}",
-    "Accept": "application/json",
-    "Content-Type": "application/json"
-}
+st.markdown("Fields marked with * are mandatory")
 
-# ---------------- HELPERS ----------------
-def adf_text(text):
-    return {
-        "type": "doc",
-        "version": 1,
-        "content": [{
-            "type": "paragraph",
-            "content": [{"type": "text", "text": text}]
-        }]
-    }
+test_ticket = st.text_input("Test Ticket Number * (e.g. CT-12345)")
+failed_step = st.text_input("Failed Test Step Number *")
+summary = st.text_input("Defect Summary *")
 
-def optional_list_field(value):
-    return [{"name": value}] if value else []
-
-def map_severity_to_priority(severity):
-    return {
-        "Sev-1": "Blocker",
-        "Sev-2": "Major",
-        "Sev-3": "Medium",
-        "Sev-4": "Minor"
-    }.get(severity, "Medium")
-
-# ---------------- UI ----------------
-st.title("🐞 Defect Creation from Test Ticket")
-
-test_ticket = st.text_input("Test Ticket Number (e.g. CT-19345)")
-failed_step = st.text_input("Failed Step Number")
+description_text = st.text_area(
+    "Defect Description",
+    placeholder="Describe the issue clearly..."
+)
 
 severity = st.selectbox(
-    "Severity",
+    "Severity *",
     ["Sev-1", "Sev-2", "Sev-3", "Sev-4"]
 )
 
-priority_preview = map_severity_to_priority(severity)
-st.info(f"📌 Jira Priority will be set to **{priority_preview}**")
+priority = st.selectbox(
+    "Priority *",
+    ["Critical", "Major", "Medium", "Minor"]
+)
 
 test_phase = st.selectbox(
-    "Test Phase",
+    "Test Phase *",
     ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"]
 )
 
-fix_version = st.text_input("Fix Version (optional)")
-affected_version = st.text_input("Affected Version (optional)")
-component = st.text_input("Component (optional)")
-
-attachments = st.file_uploader(
-    "Attach Evidence",
+uploaded_files = st.file_uploader(
+    "Attach Evidence (screenshots, logs)",
     accept_multiple_files=True
 )
 
-# ---------------- CREATE DEFECT ----------------
-if st.button("Create Defect"):
+# ---------------------------
+# CREATE DEFECT BUTTON
+# ---------------------------
+if st.button("🚀 Create Defect"):
 
-    if not test_ticket or not failed_step:
-        st.error("Test Ticket and Failed Step are mandatory")
+    if not test_ticket or not failed_step or not summary:
+        st.error("Please fill all mandatory fields (*)")
         st.stop()
 
-    description = (
-        f"Test Ticket: {test_ticket}\n"
-        f"Failed Step: {failed_step}\n"
-        f"Severity: {severity}\n"
-        f"Test Phase: {test_phase}"
+    # Jira credentials from Streamlit secrets
+    auth = HTTPBasicAuth(
+        st.secrets["JIRA_EMAIL"],
+        st.secrets["JIRA_API_TOKEN"]
     )
 
-    defect_payload = {
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+
+    # ---------------------------
+    # ADF DESCRIPTION (MANDATORY)
+    # ---------------------------
+    description_adf = {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": f"Test Ticket: {test_ticket}"}
+                ]
+            },
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": f"Failed Step: {failed_step}"}
+                ]
+            },
+            {
+                "type": "paragraph",
+                "content": [
+                    {"type": "text", "text": description_text or ""}
+                ]
+            }
+        ]
+    }
+
+    # ---------------------------
+    # JIRA PAYLOAD
+    # ---------------------------
+    payload = {
         "fields": {
             "project": {"key": PROJECT_KEY},
             "issuetype": {"name": ISSUE_TYPE},
-            "summary": f"Defect from {test_ticket} – Failed Step {failed_step}",
-            "description": adf_text(description),
+            "summary": summary,
+            "description": description_adf,
 
-            # ✅ Priority (system field)
-            "priority": {
-                "name": map_severity_to_priority(severity)
-            },
+            # Priority (SYSTEM FIELD)
+            "priority": {"name": priority},
 
-            # ✅ Severity (custom field)
-            SEVERITY_FIELD_ID: {
-                "value": severity
-            },
+            # Severity (CUSTOM FIELD)
+            SEVERITY_FIELD_ID: {"value": severity},
 
-            "components": optional_list_field(component),
-            "fixVersions": optional_list_field(fix_version),
-            "versions": optional_list_field(affected_version)
+            # Test Phase (REQUIRED CUSTOM FIELD)
+            TEST_PHASE_FIELD_ID: {"value": test_phase}
         }
     }
 
-    create_url = f"{JIRA_BASE_URL}/rest/api/3/issue"
-    response = requests.post(create_url, headers=HEADERS, json=defect_payload)
+    # ---------------------------
+    # CREATE ISSUE
+    # ---------------------------
+    response = requests.post(
+        f"{JIRA_BASE_URL}/rest/api/3/issue",
+        json=payload,
+        headers=headers,
+        auth=auth
+    )
 
     if response.status_code != 201:
         st.error("❌ Defect creation failed")
         st.code(response.text)
         st.stop()
 
-    defect_key = response.json()["key"]
-    st.success(f"✅ Defect created: {defect_key}")
+    issue_key = response.json()["key"]
+    st.success(f"✅ Defect created successfully: {issue_key}")
 
-    # -------- Attach files --------
-    if attachments:
-        attach_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{defect_key}/attachments"
-        attach_headers = {
-            "Authorization": f"Basic {auth_bytes}",
-            "X-Atlassian-Token": "no-check"
-        }
+    # ---------------------------
+    # LINK DEFECT TO TEST TICKET
+    # ---------------------------
+    link_payload = {
+        "type": {"name": "Relates"},
+        "inwardIssue": {"key": issue_key},
+        "outwardIssue": {"key": test_ticket}
+    }
 
-        for file in attachments:
-            files = {"file": (file.name, file, file.type)}
-            requests.post(attach_url, headers=attach_headers, files=files)
+    requests.post(
+        f"{JIRA_BASE_URL}/rest/api/3/issueLink",
+        json=link_payload,
+        headers=headers,
+        auth=auth
+    )
 
-    st.success("🎉 Defect created with Priority & Severity correctly set")
+    # ---------------------------
+    # ATTACH FILES
+    # ---------------------------
+    if uploaded_files:
+        for file in uploaded_files:
+            attach_headers = {
+                "X-Atlassian-Token": "no-check"
+            }
+            files = {"file": (file.name, file.getvalue())}
+
+            requests.post(
+                f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/attachments",
+                headers=attach_headers,
+                files=files,
+                auth=auth
+            )
+
+    st.success("📎 Attachments uploaded & Test Ticket linked")
