@@ -1,13 +1,24 @@
 
-import streamlit as st
-import requests
-from requests.auth import HTTPBasicAuth
+# app.py
+# --------------------------------------------------------------
+# Jira Defect Creator (with Zephyr Squad Cloud test details)
+# --------------------------------------------------------------
+# Prereqs:
+#  - Streamlit secrets set: JIRA_EMAIL, JIRA_API_TOKEN,
+#    ZEPHYR_ACCESS_KEY, ZEPHYR_SECRET_KEY, ATLASSIAN_ACCOUNT_ID
+#  - Python: pip install streamlit requests
+# --------------------------------------------------------------
+
 import base64
 import hashlib
 import hmac
 import json
 import time
 import urllib.parse
+
+import streamlit as st
+import requests
+from requests.auth import HTTPBasicAuth
 
 # ============================================================
 # CONFIGURATION
@@ -22,7 +33,7 @@ ISSUE_TYPE_CANDIDATES = ["Defect", "Bug"]
 TEST_PHASE_FIELD_ID = "customfield_10245"   # Test Phase
 SEVERITY_FIELD_ID   = "customfield_10260"   # Severity
 
-# Zephyr Cloud base (fixed)
+# Zephyr Cloud base
 ZEPHYR_BASE = "https://prod-api.zephyr4jiracloud.com/connect"
 
 # ============================================================
@@ -42,13 +53,23 @@ def headers_json():
 
 def jira_issue_id_from_key(issue_key: str) -> str:
     """
-    Translate Jira issue key -> internal numeric issueId (needed by Zephyr teststep).
+    Translate Jira issue key -> internal numeric issueId (needed by some Zephyr endpoints).
     Jira Cloud v3: GET /rest/api/3/issue/{key}
     """
     url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}"
-    r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth())
+    r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth(), timeout=30)
     r.raise_for_status()
     return r.json()["id"]
+
+def jira_project_id_from_key(project_key: str) -> int:
+    """
+    Jira Cloud v3: GET /rest/api/3/project/{projectKey}
+    Returns the numeric project id needed by Zephyr Squad Cloud endpoints.
+    """
+    url = f"{JIRA_BASE_URL}/rest/api/3/project/{project_key}"
+    r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth(), timeout=30)
+    r.raise_for_status()
+    return int(r.json()["id"])
 
 def get_issue_type_id(project_key: str, candidates):
     """
@@ -57,7 +78,7 @@ def get_issue_type_id(project_key: str, candidates):
     Returns (issueTypeId, issueTypeName).
     """
     url = f"{JIRA_BASE_URL}/rest/api/3/issue/createmeta/{project_key}/issuetypes"
-    r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth())
+    r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth(), timeout=30)
     if r.status_code != 200:
         st.error(f"Failed to fetch issue types for project {project_key} ({r.status_code}): {r.text[:300]}")
         st.stop()
@@ -83,7 +104,7 @@ def get_create_fields(project_key: str, issue_type_id: str) -> dict:
     Returns the field metadata for create.
     """
     url = f"{JIRA_BASE_URL}/rest/api/3/issue/createmeta/{project_key}/issuetypes/{issue_type_id}"
-    r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth())
+    r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth(), timeout=30)
     if r.status_code != 200:
         st.error(f"Failed to get create-field metadata ({r.status_code}): {r.text[:300]}")
         st.stop()
@@ -157,10 +178,12 @@ def get_zephyr_test_details_for_key(jira_test_key: str):
     """
     Fetch design-time test steps (Step/Data/Expected) for a Jira Test issue key.
     Cloud endpoint (relative): /public/rest/api/1.0/teststep/{issueId}
+    NOTE: Zephyr requires projectId via query params → 400 if missing.
     """
     issue_id = jira_issue_id_from_key(jira_test_key)
+    project_id = jira_project_id_from_key(PROJECT_KEY)  # "CT" → numeric id
     rel = f"/public/rest/api/1.0/teststep/{issue_id}"
-    return zephyr_get(rel)
+    return zephyr_get(rel, query_params={"projectId": project_id})
 
 def steps_to_markdown(steps: list[dict]) -> str:
     """
@@ -317,7 +340,8 @@ if st.button("🚀 Create Defect"):
         f"{JIRA_BASE_URL}/rest/api/3/issue",
         json=payload,
         headers=headers_json(),
-        auth=auth
+        auth=auth,
+        timeout=30
     )
 
     if create_resp.status_code != 201:
@@ -338,7 +362,8 @@ if st.button("🚀 Create Defect"):
         f"{JIRA_BASE_URL}/rest/api/3/issueLink",
         json=link_payload,
         headers=headers_json(),
-        auth=auth
+        auth=auth,
+        timeout=30
     )
     if link_resp.status_code not in (200, 201, 204):
         st.warning(f"Linking returned {link_resp.status_code}: {link_resp.text[:300]}")
@@ -346,13 +371,17 @@ if st.button("🚀 Create Defect"):
     # Attach files
     if uploaded_files:
         for file in uploaded_files:
-            attach_headers = {"X-Atlassian-Token": "no-check"}
+            attach_headers = {
+                "X-Atlassian-Token": "no-check",
+                "Accept": "application/json"
+            }
             files = {"file": (file.name, file.getvalue())}
             attach_resp = requests.post(
                 f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/attachments",
                 headers=attach_headers,
                 files=files,
-                auth=auth
+                auth=auth,
+                timeout=60
             )
             if attach_resp.status_code not in (200, 201):
                 st.warning(f"Attachment '{file.name}' failed: {attach_resp.status_code} {attach_resp.text[:200]}")
