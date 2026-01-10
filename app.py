@@ -60,7 +60,7 @@ def build_issue_payload(test_key: str, failed_step_num: int) -> dict:
         "fields": {
             "project": {"key": PROJECT_KEY},
             "summary": summary,
-            "issuetype": {"name": "Bug"},
+            "issuetype": {"name": "Defect"},
             "priority": {"name": "Medium"},  # default; adjust in UI if you want
             "description": {
                 "type": "doc",
