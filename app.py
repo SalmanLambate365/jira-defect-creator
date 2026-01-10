@@ -2,50 +2,35 @@
 import streamlit as st
 import requests
 from requests.auth import HTTPBasicAuth
-import base64, hashlib, hmac, json, time, urllib.parse
+import base64
+import hashlib
+import hmac
+import json
+import time
+import urllib.parse
 
-# ---------------------------
+# ============================================================
 # CONFIGURATION
-# ---------------------------
+# ============================================================
 JIRA_BASE_URL = "https://mandg.atlassian.net"
 PROJECT_KEY = "CT"
 
-# We will try these in order and resolve to an ID for your project
+# Prefer these issue types when creating the defect
 ISSUE_TYPE_CANDIDATES = ["Defect", "Bug"]
 
-# Custom field IDs in your Jira
-severity = st.selectbox("Severity *", ["Sev-1", "Sev-2", "Sev-3", "Sev-4"])TEST_PHASE_FIELD_ID = "customfield_10245"   # Test Phase (single-select)
-priority = st.selectbox("Priority *", ["Critical", "Major", "Medium", "Minor"])
+# Custom field IDs in your Jira (single-selects)
+TEST_PHASE_FIELD_ID = "customfield_10245"   # Test Phase
+SEVERITY_FIELD_ID   = "customfield_10260"   # Severity
 
-test_phase = st.selectbox(
-    "Test Phase *",
-    ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"]
-)
+# Zephyr Cloud base (fixed)
+ZEPHYR_BASE = "https://prod-api.zephyr4jiracloud.com/connect"
 
-uploaded_files = st.file_uploader(
-    "Attach Evidence (screenshots, logs)",
-    accept_multiple_files=True
-)
-
-# --- Zephyr UI controls (added) ---
-st.markdown("### Zephyr: Fetch Test Details (optional)")
-if st.button("🔎 Fetch Zephyr Test Details"):
-    try:
-        # store markdown preview in session for later use
-        zephyr_steps = get_zephyr_test_details_for_key(test_ticket)
-        md = steps_to_markdown(zephyr_steps)
-        st.session_state["zephyr_steps_md"] = md
-        st.session_state["zephyr_steps_raw"] = zephyr_steps
-        st.success("Fetched Zephyr test steps.")
-        st.code(md, language="markdown")
-    except Exception as e:
-        st.error(f"Failed to fetch Zephyr test steps: {e}")
-
-# ---------------------------
-# HELPERS (Jira REST)
-# ---------------------------
+# ============================================================
+# HELPERS (AUTH / JIRA COMMON)
+# ============================================================
 
 def get_auth():
+    """Create Jira HTTP Basic auth from secrets."""
     try:
         return HTTPBasicAuth(st.secrets["JIRA_EMAIL"], st.secrets["JIRA_API_TOKEN"])
     except KeyError as e:
@@ -55,11 +40,21 @@ def get_auth():
 def headers_json():
     return {"Accept": "application/json", "Content-Type": "application/json"}
 
-def get_issue_type_id(project_key: str, candidates: list[str]) -> tuple[str, str] | None:
+def jira_issue_id_from_key(issue_key: str) -> str:
+    """
+    Translate Jira issue key -> internal numeric issueId (needed by Zephyr teststep).
+    Jira Cloud v3: GET /rest/api/3/issue/{key}
+    """
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}"
+    r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth())
+    r.raise_for_status()
+    return r.json()["id"]
+
+def get_issue_type_id(project_key: str, candidates):
     """
     Resolve a valid issue type ID for this project, preferring names in 'candidates'.
     Jira Cloud v3: GET /rest/api/3/issue/createmeta/{projectKey}/issuetypes
-    Returns (issueTypeId, issueTypeName) or None.
+    Returns (issueTypeId, issueTypeName).
     """
     url = f"{JIRA_BASE_URL}/rest/api/3/issue/createmeta/{project_key}/issuetypes"
     r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth())
@@ -94,7 +89,7 @@ def get_create_fields(project_key: str, issue_type_id: str) -> dict:
         st.stop()
     return r.json()
 
-def get_option_id(fields_meta: dict, field_id: str, chosen_label: str) -> str | None:
+def get_option_id(fields_meta: dict, field_id: str, chosen_label: str):
     """
     From create fields metadata, find the single-select option ID for the chosen label.
     """
@@ -106,27 +101,17 @@ def get_option_id(fields_meta: dict, field_id: str, chosen_label: str) -> str | 
                     return opt.get("id")
     return None
 
-# ---------------------------
-# ZEHPYR (added)
-# ---------------------------
+# ============================================================
+# ZEPHYR (JWT + GET TEST STEPS)
+# ============================================================
 
-ZEPHYR_BASE = "https://prod-api.zephyr4jiracloud.com/connect"
-
-def jira_issue_id_from_key(issue_key: str) -> str:
-    """
-    Translate Jira issue key -> internal numeric issueId (needed by Zephyr teststep).
-    Jira Cloud v3: GET /rest/api/3/issue/{key}
-    """
-    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}"
-    r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth())
-    r.raise_for_status()
-    return r.json()["id"]
-
-def build_zephyr_jwt(method: str, relative_path: str, query_params: dict | None = None, expires_in: int = 360) -> str:
+def build_zephyr_jwt(method: str, relative_path: str, query_params=None, expires_in: int = 360) -> str:
     """
     Build per-request JWT for Zephyr Squad Cloud.
-    Payload includes qsh (query string hash) calculated from METHOD & PATH & canonical_query.
-    Docs: Zephyr Cloud REST uses /connect, JWT + zapiAccessKey headers per request.
+    JWT payload includes qsh (METHOD & PATH & canonical_query).
+    Headers required in request:
+      Authorization: JWT <token>
+      zapiAccessKey: <your access key>
     """
     method = method.upper()
     query_params = query_params or {}
@@ -136,9 +121,9 @@ def build_zephyr_jwt(method: str, relative_path: str, query_params: dict | None 
 
     now = int(time.time())
     payload = {
-        "sub": st.secrets["ATLASSIAN_ACCOUNT_ID"],   # your Atlassian account ID
+        "sub": st.secrets["ATLASSIAN_ACCOUNT_ID"],     # your Atlassian account ID
         "qsh": qsh,
-        "iss": st.secrets["ZEPHYR_ACCESS_KEY"],      # access key
+        "iss": st.secrets["ZEPHYR_ACCESS_KEY"],        # access key
         "exp": now + expires_in,
         "iat": now
     }
@@ -153,16 +138,14 @@ def build_zephyr_jwt(method: str, relative_path: str, query_params: dict | None 
     ).rstrip(b"=")
     return signing_input.decode() + "." + signature.decode()
 
-def zephyr_get(relative_path: str, query_params: dict | None = None):
-    """
-    GET wrapper for Zephyr Cloud with JWT + zapiAccessKey.
-    """
+def zephyr_get(relative_path: str, query_params=None):
+    """GET wrapper for Zephyr Cloud with JWT + zapiAccessKey headers."""
     query_params = query_params or {}
     jwt = build_zephyr_jwt("GET", relative_path, query_params)
     headers = {
         "Authorization": f"JWT {jwt}",
         "zapiAccessKey": st.secrets["ZEPHYR_ACCESS_KEY"],
-        "Accept": "application/json"
+        "Accept": "application/json",
     }
     url = f"{ZEPHYR_BASE}{relative_path}"
     r = requests.get(url, headers=headers, params=query_params, timeout=30)
@@ -170,10 +153,10 @@ def zephyr_get(relative_path: str, query_params: dict | None = None):
         raise RuntimeError(f"Zephyr GET {relative_path} failed {r.status_code}: {r.text[:300]}")
     return r.json()
 
-def get_zephyr_test_details_for_key(jira_test_key: str) -> list[dict]:
+def get_zephyr_test_details_for_key(jira_test_key: str):
     """
     Fetch design-time test steps (Step/Data/Expected) for a Jira Test issue key.
-    Cloud endpoint: /public/rest/api/1.0/teststep/{issueId}
+    Cloud endpoint (relative): /public/rest/api/1.0/teststep/{issueId}
     """
     issue_id = jira_issue_id_from_key(jira_test_key)
     rel = f"/public/rest/api/1.0/teststep/{issue_id}"
@@ -187,6 +170,7 @@ def steps_to_markdown(steps: list[dict]) -> str:
     if not steps:
         return "*No steps found*"
     lines = []
+    # Sort by orderId if present
     for s in sorted(steps, key=lambda x: x.get("orderId", 0)):
         step = (s.get("step") or "").strip()
         data = (s.get("data") or "").strip()
@@ -194,9 +178,9 @@ def steps_to_markdown(steps: list[dict]) -> str:
         lines.append(f"- **Step**: {step}\n  - **Data**: {data}\n  - **Expected**: {exp}")
     return "\n".join(lines)
 
-# ---------------------------
-# DESCRIPTION (ADF)
-# ---------------------------
+# ============================================================
+# DESCRIPTION (ADF) — includes Zephyr steps if fetched
+# ============================================================
 
 def make_adf_description(
     test_key: str,
@@ -208,32 +192,74 @@ def make_adf_description(
     """
     Atlassian Document Format (ADF) description, augmented with Zephyr steps (if fetched).
     """
-    # base text block
-    lines = [
+    base_text = "\n".join([
         f"Test Ticket: {test_key}",
         f"Failed Step Number: {step_num}",
         f"Severity: {severity_label}",
         f"Priority: {priority_label}",
         f"Test Phase: {test_phase_label}",
-    ]
+    ])
 
     content_blocks = [
-        {"type": "paragraph", "content": [{"type": "text", "text": "\n".join(lines)}]}
+        {"type": "paragraph", "content": [{"type": "text", "text": base_text}]}
     ]
 
-    # append Zephyr steps if present
+    # Append Zephyr steps preview if present
     z_md = st.session_state.get("zephyr_steps_md", "").strip()
     if z_md:
-        content_blocks.append({"type": "heading", "attrs": {"level": 3}, "content": [{"type": "text", "text": "Zephyr Steps"}]})
-        # ADF doesn't understand Markdown; include as plain text paragraphs
+        content_blocks.append({
+            "type": "heading", "attrs": {"level": 3},
+            "content": [{"type": "text", "text": "Zephyr Steps"}]
+        })
+        # ADF is not Markdown; include as plain text lines
         for para in z_md.split("\n"):
             content_blocks.append({"type": "paragraph", "content": [{"type": "text", "text": para}]})
 
     return {"type": "doc", "version": 1, "content": content_blocks}
 
-# ---------------------------
+# ============================================================
+# STREAMLIT UI
+# ============================================================
+
+st.set_page_config(page_title="Jira Defect Creator", layout="centered")
+st.title("🐞 Create Jira Defect from Test Ticket")
+st.markdown("**Fields marked with * are mandatory**")
+
+test_ticket = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
+failed_step_num = st.number_input("Failed Test Step Number *", min_value=1, value=1, step=1)
+
+severity = st.selectbox("Severity *", ["Sev-1", "Sev-2", "Sev-3", "Sev-4"])
+priority = st.selectbox("Priority *", ["Critical", "Major", "Medium", "Minor"])
+
+test_phase = st.selectbox(
+    "Test Phase *",
+    ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"]
+)
+
+uploaded_files = st.file_uploader(
+    "Attach Evidence (screenshots, logs)",
+    accept_multiple_files=True
+)
+
+# --- Zephyr UI (Optional fetch) ---
+st.markdown("### Zephyr: Fetch Test Details")
+if st.button("🔎 Fetch Zephyr Test Details"):
+    if not test_ticket.strip():
+        st.warning("Enter a Jira Test Ticket (e.g., CT-12345) first.")
+    else:
+        try:
+            steps = get_zephyr_test_details_for_key(test_ticket.strip())
+            md = steps_to_markdown(steps)
+            st.session_state["zephyr_steps_md"] = md
+            st.session_state["zephyr_steps_raw"] = steps
+            st.success("Fetched Zephyr test steps.")
+            st.code(md, language="markdown")
+        except Exception as e:
+            st.error(f"Failed to fetch Zephyr test steps: {e}")
+
+# ============================================================
 # CREATE DEFECT BUTTON
-# ---------------------------
+# ============================================================
 if st.button("🚀 Create Defect"):
     # Basic validation
     if not test_ticket.strip() or not severity or not priority or not test_phase:
@@ -333,15 +359,3 @@ if st.button("🚀 Create Defect"):
 
     st.success("📎 Attachments uploaded & Test Ticket linked")
     st.link_button("Open in Jira", f"{JIRA_BASE_URL}/browse/{issue_key}")
-SEVERITY_FIELD_ID   = "customfield_10260"   # Severity  (single-select)
-
-# ---------------------------
-# STREAMLIT UI
-# ---------------------------
-st.set_page_config(page_title="Jira Defect Creator", layout="centered")
-st.title("🐞 Create Jira Defect from Test Ticket")
-st.markdown("**Fields marked with * are mandatory**")
-
-test_ticket = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
-failed_step_num = st.number_input("Failed Test Step Number *", min_value=1, value=1, step=1)
-
