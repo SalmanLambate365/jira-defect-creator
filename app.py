@@ -24,12 +24,7 @@ st.markdown("Fields marked with * are mandatory")
 
 test_ticket = st.text_input("Test Ticket Number * (e.g. CT-12345)")
 failed_step = st.text_input("Failed Test Step Number *")
-summary = st.text_input("Defect Summary *")
 
-description_text = st.text_area(
-    "Defect Description",
-    placeholder="Describe the issue clearly..."
-)
 
 severity = st.selectbox(
     "Severity *",
