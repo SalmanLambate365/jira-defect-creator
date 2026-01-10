@@ -191,6 +191,6 @@ if st.button("Create GitHub Issue"):
         st.error(f"Failed to create GitHub issue: {e}")
 
 st.caption("Notes: Zephyr Cloud API requires per‑request JWT + zapiAccessKey; Jira REST is used only to translate issue key → internal issueId.")
-``
+
 JIRA_TOKEN  = st.secrets["JIRA_API_TOKEN"]
 
