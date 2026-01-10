@@ -1,11 +1,12 @@
 
 # app.py
 # --------------------------------------------------------------
-# Jira Defect Creator (background Zephyr fetch + field copy from Test)
+# Jira Defect Creator (background Zephyr fetch + copy fields from Test)
 # --------------------------------------------------------------
 # Prereqs:
-#  - Streamlit secrets: JIRA_EMAIL, JIRA_API_TOKEN,
-#    ZEPHYR_ACCESS_KEY, ZEPHYR_SECRET_KEY, ATLASSIAN_ACCOUNT_ID
+#  - .streamlit/secrets.toml with:
+#      JIRA_EMAIL, JIRA_API_TOKEN,
+#      ZEPHYR_ACCESS_KEY, ZEPHYR_SECRET_KEY, ATLASSIAN_ACCOUNT_ID
 #  - pip install streamlit requests
 # --------------------------------------------------------------
 
@@ -26,19 +27,23 @@ from requests.auth import HTTPBasicAuth
 JIRA_BASE_URL = "https://mandg.atlassian.net"
 PROJECT_KEY = "CT"
 
-# Prefer these issue types when creating the defect
 ISSUE_TYPE_CANDIDATES = ["Defect", "Bug"]
 
-# Custom field IDs in your Jira (single-selects already known)
+# Known single-select custom field IDs in your Jira
 TEST_PHASE_FIELD_ID = "customfield_10245"   # Test Phase
 SEVERITY_FIELD_ID   = "customfield_10260"   # Severity
 
-# Names of additional fields you want to copy by NAME -> ID resolution at runtime
+# Resolve these by NAME → ID at runtime (case-insensitive)
 CUST_TECH_PORTFOLIO_NAME     = "Cust Tech Portfolio"
 CUST_TECH_PRODUCT_NAME       = "Cust Tech Product"
 CUST_TECH_DELIVERY_TEAM_NAME = "Cust Tech Delivery Team"
 
-# Zephyr Cloud base
+# Names for description sections pulled from the Test ticket
+EXPECTED_RESULTS_NAME = "Expected Results"
+ACTUAL_RESULTS_NAME   = "Actual Results"
+IMPACT_NAME           = "Impact"
+
+# Zephyr Squad Cloud base
 ZEPHYR_BASE = "https://prod-api.zephyr4jiracloud.com/connect"
 
 # ============================================================
@@ -46,37 +51,32 @@ ZEPHYR_BASE = "https://prod-api.zephyr4jiracloud.com/connect"
 # ============================================================
 
 def get_auth():
-    """Create Jira HTTP Basic auth from secrets."""
     try:
         return HTTPBasicAuth(st.secrets["JIRA_EMAIL"], st.secrets["JIRA_API_TOKEN"])
     except KeyError as e:
-        st.error(f"Missing secret: {e}. Add it in App settings → Secrets.")
+        st.error(f"Missing secret: {e}. Add in App → Settings → Secrets.")
         st.stop()
 
 def headers_json():
     return {"Accept": "application/json", "Content-Type": "application/json"}
 
 def jira_issue_id_from_key(issue_key: str) -> str:
-    """Jira Cloud v3: GET /rest/api/3/issue/{key} → internal issueId"""
     url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}"
     r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth(), timeout=30)
     r.raise_for_status()
     return r.json()["id"]
 
 def jira_project_id_from_key(project_key: str) -> int:
-    """Jira Cloud v3: GET /rest/api/3/project/{projectKey} → numeric project id"""
     url = f"{JIRA_BASE_URL}/rest/api/3/project/{project_key}"
     r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth(), timeout=30)
     r.raise_for_status()
     return int(r.json()["id"])
 
-# ------------------------------------------------------------
-# Resolve FIELD ID by NAME (for your "Cust Tech ..." custom fields)
-# ------------------------------------------------------------
+# ---------- Field ID cache & resolver ----------
 _FIELD_ID_CACHE: dict[str, str] = {}
 
 def get_field_id_by_name(field_name: str) -> str | None:
-    """Look up field ID by its display name (case-insensitive)."""
+    """Resolve Jira field ID by display name (case-insensitive)."""
     if field_name in _FIELD_ID_CACHE:
         return _FIELD_ID_CACHE[field_name]
     url = f"{JIRA_BASE_URL}/rest/api/3/field"
@@ -93,13 +93,6 @@ def get_field_id_by_name(field_name: str) -> str | None:
 # ============================================================
 
 def build_zephyr_jwt(method: str, relative_path: str, query_params=None, expires_in: int = 360) -> str:
-    """
-    Build per-request JWT for Zephyr Squad Cloud.
-    JWT payload includes qsh (METHOD & PATH & canonical_query).
-    Headers required in request:
-      Authorization: JWT <token>
-      zapiAccessKey: <your access key>
-    """
     method = method.upper()
     query_params = query_params or {}
     canonical_qs = urllib.parse.urlencode(sorted(query_params.items()), doseq=True)
@@ -126,59 +119,54 @@ def build_zephyr_jwt(method: str, relative_path: str, query_params=None, expires
     return signing_input.decode() + "." + signature.decode()
 
 def zephyr_get(relative_path: str, query_params=None):
-    """GET wrapper for Zephyr Cloud with JWT + zapiAccessKey headers."""
     query_params = query_params or {}
     jwt = build_zephyr_jwt("GET", relative_path, query_params)
-    headers = {
-        "Authorization": f"JWT {jwt}",
-        "zapiAccessKey": st.secrets["ZEPHYR_ACCESS_KEY"],
-        "Accept": "application/json",
-    }
+    headers = {"Authorization": f"JWT {jwt}", "zapiAccessKey": st.secrets["ZEPHYR_ACCESS_KEY"], "Accept": "application/json"}
     url = f"{ZEPHYR_BASE}{relative_path}"
     r = requests.get(url, headers=headers, params=query_params, timeout=30)
     if r.status_code >= 400:
         raise RuntimeError(f"Zephyr GET {relative_path} failed {r.status_code}: {r.text[:300]}")
     return r.json()
 
-def get_zephyr_steps_only(jira_test_key: str) -> list[str]:
+def get_zephyr_steps_and_expected(jira_test_key: str) -> tuple[list[str], list[str]]:
     """
-    Fetch Zephyr design-time steps and return **only the step descriptions**.
-    (You requested Expected / Actual to be separate free-text fields on the defect.)
+    Returns ordered step descriptions and expected results for Steps to reproduce/Expected section.
     """
     issue_id = jira_issue_id_from_key(jira_test_key)
-    project_id = jira_project_id_from_key(PROJECT_KEY)  # "CT" → numeric id
+    project_id = jira_project_id_from_key(PROJECT_KEY)
     rel = f"/public/rest/api/1.0/teststep/{issue_id}"
     rows = zephyr_get(rel, query_params={"projectId": project_id})
-    steps = []
+    steps, expected = [], []
     for s in sorted(rows, key=lambda x: x.get("orderId", 0)):
-        txt = (s.get("step") or "").strip()
-        if txt:
-            steps.append(txt)
-    return steps
+        step_txt = (s.get("step") or "").strip()
+        exp_txt  = (s.get("result") or "").strip()
+        if step_txt:
+            steps.append(step_txt)
+        if exp_txt:
+            expected.append(exp_txt)
+    return steps, expected
 
 # ============================================================
-# FETCH FIELDS FROM TEST TICKET → TEMP STORE (labels/components/versions/customs)
+# FETCH FIELDS FROM TEST TICKET → TEMP STORE
 # ============================================================
 
-def fetch_test_ticket_fields(test_key: str) -> dict:
+def fetch_test_ticket_fields_and_text(test_key: str) -> dict:
     """
-    Pull selected fields from the source Test ticket and return a normalized dict:
-        {
-          "labels": [...],
-          "components": [{"name": ...}, ...],
-          "fixVersions": [{"name": ...}, ...],
-          "versions": [{"name": ...}, ...],  # Affects Version/s
-          "custom": { "<customfield_id>": {"id": "<optionId>"} | value }
-        }
+    Pull labels/components/fixVersions/versions and custom fields by name,
+    plus the Test ticket's **description** and the 3 text fields (Expected/Actual/Impact).
     """
-    # resolve custom field ids by name
+    # resolve custom ids by name
     portfolio_id = get_field_id_by_name(CUST_TECH_PORTFOLIO_NAME)
     product_id   = get_field_id_by_name(CUST_TECH_PRODUCT_NAME)
     team_id      = get_field_id_by_name(CUST_TECH_DELIVERY_TEAM_NAME)
 
-    wanted = ["labels", "components", "fixVersions", "versions"]
-    custom_ids = [fid for fid in [portfolio_id, product_id, team_id] if fid]
-    fields_param = ",".join(wanted + custom_ids)
+    expected_id  = get_field_id_by_name(EXPECTED_RESULTS_NAME)
+    actual_id    = get_field_id_by_name(ACTUAL_RESULTS_NAME)
+    impact_id    = get_field_id_by_name(IMPACT_NAME)
+
+    standard = ["labels", "components", "fixVersions", "versions", "description"]
+    custom_ids = [fid for fid in [portfolio_id, product_id, team_id, expected_id, actual_id, impact_id] if fid]
+    fields_param = ",".join(standard + custom_ids)
 
     url = f"{JIRA_BASE_URL}/rest/api/3/issue/{test_key}"
     r = requests.get(
@@ -191,28 +179,61 @@ def fetch_test_ticket_fields(test_key: str) -> dict:
     r.raise_for_status()
     f = r.json().get("fields", {})
 
+    # Normalize/shape values
     result = {
         "labels": f.get("labels") or [],
         "components": [{"name": c.get("name")} for c in (f.get("components") or [])],
         "fixVersions": [{"name": v.get("name")} for v in (f.get("fixVersions") or [])],
         "versions": [{"name": v.get("name")} for v in (f.get("versions") or [])],
-        "custom": {}
+        "custom": {},
+        "text": {
+            "issue_description": "",       # will render in ADF
+            "expected_results": "",
+            "actual_results": "",
+            "impact": ""
+        }
     }
 
-    # helper to store single-select custom option as {"id": "<optionId>"}
-    def _set_single_select(field_id):
+    # description can be string or ADF doc depending on your tenant/screens
+    desc = f.get("description")
+    if isinstance(desc, dict) and desc.get("type") == "doc":
+        # very simple ADF -> plain text extraction (first paragraph)
+        try:
+            paras = [n for n in desc.get("content", []) if n.get("type") == "paragraph"]
+            result["text"]["issue_description"] = "".join(
+                t.get("text", "") for t in paras[0].get("content", []) if t.get("type") == "text"
+            ) if paras else ""
+        except Exception:
+            result["text"]["issue_description"] = ""
+    else:
+        result["text"]["issue_description"] = (desc or "").strip() if isinstance(desc, str) else ""
+
+    def _copy_single_select(field_id):
         val = f.get(field_id)
         if isinstance(val, dict) and val.get("id"):
             result["custom"][field_id] = {"id": val["id"]}
-        elif val:  # sometimes apps return plain strings or dicts w/ name
+        elif val:  # fallback if app returns a string/object
             result["custom"][field_id] = val
 
-    if portfolio_id:
-        _set_single_select(portfolio_id)
-    if product_id:
-        _set_single_select(product_id)
-    if team_id:
-        _set_single_select(team_id)
+    # custom single-selects
+    if portfolio_id: _copy_single_select(portfolio_id)
+    if product_id:   _copy_single_select(product_id)
+    if team_id:      _copy_single_select(team_id)
+
+    # text fields — Expected/Actual/Impact
+    def _get_text(field_id):
+        v = f.get(field_id)
+        if isinstance(v, dict) and v.get("type") == "doc":
+            try:
+                paras = [n for n in v.get("content", []) if n.get("type") == "paragraph"]
+                return "".join(t.get("text", "") for t in paras[0].get("content", []) if t.get("type") == "text") if paras else ""
+            except Exception:
+                return ""
+        return (v or "").strip() if isinstance(v, str) else ""
+
+    if expected_id: result["text"]["expected_results"] = _get_text(expected_id)
+    if actual_id:   result["text"]["actual_results"]   = _get_text(actual_id)
+    if impact_id:   result["text"]["impact"]           = _get_text(impact_id)
 
     return result
 
@@ -222,8 +243,7 @@ def fetch_test_ticket_fields(test_key: str) -> dict:
 
 def adf_text(text: str, marks: list | None = None):
     node = {"type": "text", "text": text}
-    if marks:
-        node["marks"] = marks
+    if marks: node["marks"] = marks
     return node
 
 def adf_paragraph(text: str):
@@ -233,67 +253,66 @@ def adf_heading(text: str, level: int = 2):
     return {"type": "heading", "attrs": {"level": level}, "content": [adf_text(text)]}
 
 def adf_bullet_list(items: list[str]):
-    if not items:
-        return []
-    return [{
-        "type": "bulletList",
-        "content": [{"type": "listItem", "content": [adf_paragraph(i)]} for i in items]
-    }]
+    if not items: return []
+    return [{"type": "bulletList",
+             "content": [{"type": "listItem","content":[adf_paragraph(i)]} for i in items]}]
 
 def adf_ordered_list(items: list[str]):
-    if not items:
-        return []
-    return [{
-        "type": "orderedList",
-        "content": [{"type": "listItem", "content": [adf_paragraph(i)]} for i in items]
-    }]
+    if not items: return []
+    return [{"type": "orderedList",
+             "content": [{"type": "listItem","content":[adf_paragraph(i)]} for i in items]}]
 
-def make_adf_description(
+def make_adf_description_from_sources(
     test_key: str,
-    issue_description: str,
+    issue_description_txt: str,
     steps_list: list[str],
-    expected_results: str,
-    actual_results: str,
-    impact: str,
+    expected_results_txt: str | None,
+    expected_from_zephyr: list[str],
+    actual_results_txt: str | None,
+    impact_txt: str | None,
     evidence_names: list[str]
 ) -> dict:
     """
-    Build ADF with sections:
-    - Issue Description
-    - Steps to reproduce (ordered list)
-    - Expected Results
-    - Actual results
-    - Impact
-    - Evidences (bullet list of file names)
+    Build ADF sections from fetched data:
+      - Issue Description (from test ticket description)
+      - Steps to reproduce (from Zephyr steps)
+      - Expected Results (from test ticket field; else Zephyr expected)
+      - Actual results (from test ticket field)
+      - Impact (from test ticket field)
+      - Evidences (file names)
     """
     content = []
 
     # 1) Issue Description
-    content.append(adf_heading("Issue Description", level=2))
-    intro = issue_description.strip() or f"Related Test Ticket: {test_key}"
-    content.append(adf_paragraph(intro))
+    content.append(adf_heading("Issue Description"))
+    content.append(adf_paragraph((issue_description_txt or f"Related Test Ticket: {test_key}").strip()))
 
     # 2) Steps to reproduce
-    content.append(adf_heading("Steps to reproduce", level=2))
+    content.append(adf_heading("Steps to reproduce"))
     if steps_list:
         content.extend(adf_ordered_list(steps_list))
     else:
         content.append(adf_paragraph("Steps not available from Zephyr."))
 
     # 3) Expected Results
-    content.append(adf_heading("Expected Results", level=2))
-    content.append(adf_paragraph(expected_results.strip() or "(not provided)"))
+    content.append(adf_heading("Expected Results"))
+    if (expected_results_txt or "").strip():
+        content.append(adf_paragraph(expected_results_txt.strip()))
+    elif expected_from_zephyr:
+        content.extend(adf_bullet_list(expected_from_zephyr))
+    else:
+        content.append(adf_paragraph("(not provided)"))
 
     # 4) Actual results
-    content.append(adf_heading("Actual results", level=2))
-    content.append(adf_paragraph(actual_results.strip() or "(not provided)"))
+    content.append(adf_heading("Actual results"))
+    content.append(adf_paragraph((actual_results_txt or "(not provided)").strip()))
 
     # 5) Impact
-    content.append(adf_heading("Impact", level=2))
-    content.append(adf_paragraph(impact.strip() or "(not provided)"))
+    content.append(adf_heading("Impact"))
+    content.append(adf_paragraph((impact_txt or "(not provided)").strip()))
 
     # 6) Evidences
-    content.append(adf_heading("Evidences", level=2))
+    content.append(adf_heading("Evidences"))
     if evidence_names:
         content.extend(adf_bullet_list(evidence_names))
     else:
@@ -302,94 +321,92 @@ def make_adf_description(
     return {"type": "doc", "version": 1, "content": content}
 
 # ============================================================
-# STREAMLIT UI (no Zephyr button; fields per your sections)
+# STREAMLIT UI (no user inputs for Issue/Expected/Actual/Impact)
 # ============================================================
 
 st.set_page_config(page_title="Jira Defect Creator", layout="centered")
 st.title("🐞 Create Jira Defect from Test Ticket")
 st.markdown("**Fields marked with * are mandatory**")
 
-test_ticket       = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
-failed_step_num   = st.number_input("Failed Test Step Number *", min_value=1, value=1, step=1)
+test_ticket     = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
+failed_step_num = st.number_input("Failed Test Step Number *", min_value=1, value=1, step=1)
 
-severity          = st.selectbox("Severity *", ["Sev-1", "Sev-2", "Sev-3", "Sev-4"])
-priority          = st.selectbox("Priority *", ["Critical", "Major", "Medium", "Minor"])
-test_phase        = st.selectbox("Test Phase *", ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"])
+severity  = st.selectbox("Severity *", ["Sev-1", "Sev-2", "Sev-3", "Sev-4"])
+priority  = st.selectbox("Priority *", ["Critical", "Major", "Medium", "Minor"])
+test_phase = st.selectbox("Test Phase *", ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"])
 
-issue_description = st.text_area("Issue Description *", placeholder="Summarize the problem context, where it occurs, preconditions…")
-expected_results  = st.text_area("Expected Results *", placeholder="What should happen?")
-actual_results    = st.text_area("Actual results *", placeholder="What actually happened?")
-impact            = st.text_area("Impact *", placeholder="Business/user impact, risk, downstream effects…")
-
-uploaded_files    = st.file_uploader("Attach Evidence (screenshots, logs)", accept_multiple_files=True)
+uploaded_files = st.file_uploader("Attach Evidence (screenshots, logs)", accept_multiple_files=True)
 
 # ============================================================
 # CREATE DEFECT
 # ============================================================
 if st.button("🚀 Create Defect"):
-    # Basic validation
-    if not all([
-        test_ticket.strip(),
-        severity, priority, test_phase,
-        issue_description.strip(),
-        expected_results.strip(),
-        actual_results.strip(),
-        impact.strip()
-    ]):
+    if not all([test_ticket.strip(), severity, priority, test_phase]):
         st.error("Please fill all mandatory fields (*)")
         st.stop()
 
     # Resolve issue type & field meta
-    issue_type_id, _issue_type_name = get_issue_type_id(PROJECT_KEY, ISSUE_TYPE_CANDIDATES)
-    fields_meta = get_create_fields(PROJECT_KEY, issue_type_id)
+    url_it = f"{JIRA_BASE_URL}/rest/api/3/issue/createmeta/{PROJECT_KEY}/issuetypes"
+    r_it = requests.get(url_it, headers={"Accept":"application/json"}, auth=get_auth(), timeout=30)
+    if r_it.status_code != 200:
+        st.error(f"Failed to fetch issue types: {r_it.status_code} {r_it.text[:300]}")
+        st.stop()
+    # prefer desired types
+    it_by_name = {it.get("name"): it.get("id") for it in (r_it.json().get("issueTypes") or []) if it.get("id")}
+    issue_type_id = next((it_by_name[n] for n in ISSUE_TYPE_CANDIDATES if n in it_by_name), None) or (r_it.json().get("issueTypes") or [{}])[0].get("id")
 
-    # Map single-selects to IDs
+    fields_meta = requests.get(
+        f"{JIRA_BASE_URL}/rest/api/3/issue/createmeta/{PROJECT_KEY}/issuetypes/{issue_type_id}",
+        headers={"Accept":"application/json"},
+        auth=get_auth(),
+        timeout=30
+    ).json()
+
+    def get_option_id(fields_meta: dict, field_id: str, chosen_label: str) -> str | None:
+        for f in fields_meta.get("fields", []):
+            if f.get("fieldId") == field_id:
+                for opt in (f.get("allowedValues") or []):
+                    label = opt.get("value") or opt.get("name")
+                    if label == chosen_label:
+                        return opt.get("id")
+        return None
+
     severity_id   = get_option_id(fields_meta, SEVERITY_FIELD_ID, severity)
     test_phase_id = get_option_id(fields_meta, TEST_PHASE_FIELD_ID, test_phase)
-    missing = []
-    if severity_id is None:
-        missing.append(f"Severity '{severity}' (no matching option ID)")
-    if test_phase_id is None:
-        missing.append(f"Test Phase '{test_phase}' (no matching option ID)")
-    if missing:
-        st.error("Configuration mismatch:\n- " + "\n".join(missing))
+    if not severity_id or not test_phase_id:
+        st.error("Severity or Test Phase option not found on create screen.")
         st.stop()
 
     # --- Background pulls ---
-    # a) Zephyr steps (ordered list of step descriptions)
     try:
-        steps_list = get_zephyr_steps_only(test_ticket.strip())
+        steps_list, expected_from_zephyr = get_zephyr_steps_and_expected(test_ticket.strip())
     except Exception as e:
-        steps_list = []
-        st.warning(f"Zephyr steps could not be fetched: {e}")
+        steps_list, expected_from_zephyr = [], []
+        st.warning(f"Zephyr fetch failed: {e}")
 
-    # b) Field copy from the source Test ticket (labels/components/versions/customs)
     try:
-        copied_fields = fetch_test_ticket_fields(test_ticket.strip())
+        copied = fetch_test_ticket_fields_and_text(test_ticket.strip())
     except Exception as e:
-        copied_fields = {"labels": [], "components": [], "fixVersions": [], "versions": [], "custom": {}}
-        st.warning(f"Could not fetch fields from Test ticket: {e}")
+        copied = {"labels": [], "components": [], "fixVersions": [], "versions": [], "custom": {}, "text":{
+            "issue_description":"", "expected_results":"", "actual_results":"", "impact":""}}
+        st.warning(f"Could not fetch fields/description from Test: {e}")
 
-    # Evidence file names for description (attachments sent after creation)
     evidence_names = [f.name for f in (uploaded_files or [])]
 
-    # Summary & Description (ADF with requested sections)
     summary = f"[{test_ticket.strip()}] Failed at Step {int(failed_step_num)}"
-    description_adf = make_adf_description(
+    description_adf = make_adf_description_from_sources(
         test_key=test_ticket.strip(),
-        issue_description=issue_description,
+        issue_description_txt=copied["text"]["issue_description"],
         steps_list=steps_list,
-        expected_results=expected_results,
-        actual_results=actual_results,
-        impact=impact,
+        expected_results_txt=copied["text"]["expected_results"],
+        expected_from_zephyr=expected_from_zephyr,
+        actual_results_txt=copied["text"]["actual_results"],
+        impact_txt=copied["text"]["impact"],
         evidence_names=evidence_names
     )
 
-    # Jira credentials
     auth = get_auth()
-
-    # Build minimal payload for CREATE
-    payload = {
+    create_payload = {
         "fields": {
             "project":   {"key": PROJECT_KEY},
             "issuetype": {"id": issue_type_id},
@@ -404,7 +421,7 @@ if st.button("🚀 Create Defect"):
     # Create issue
     create_resp = requests.post(
         f"{JIRA_BASE_URL}/rest/api/3/issue",
-        json=payload,
+        json=create_payload,
         headers=headers_json(),
         auth=auth,
         timeout=30
@@ -415,24 +432,16 @@ if st.button("🚀 Create Defect"):
         st.stop()
 
     issue_key = create_resp.json()["key"]
-    st.success(f"✅ Defect created successfully: {issue_key}")
+    st.success(f"✅ Defect created: {issue_key}")
 
-    # --------------------------------------------------------
-    # SECOND STEP: Update copied fields on the new Defect
-    # --------------------------------------------------------
+    # ---------- Update copied fields on the new defect ----------
     edit_fields = {}
-    # system fields (replace with source values)
-    if copied_fields["labels"]:
-        edit_fields["labels"] = copied_fields["labels"]
-    if copied_fields["components"]:
-        edit_fields["components"] = copied_fields["components"]          # [{"name": "..."}]
-    if copied_fields["fixVersions"]:
-        edit_fields["fixVersions"] = copied_fields["fixVersions"]        # [{"name": "..."}]
-    if copied_fields["versions"]:
-        edit_fields["versions"] = copied_fields["versions"]              # [{"name": "..."}] (Affects Version/s)
-
-    # custom fields
-    for fid, val in copied_fields["custom"].items():
+    if copied["labels"]:     edit_fields["labels"]     = copied["labels"]
+    if copied["components"]: edit_fields["components"] = copied["components"]
+    if copied["fixVersions"]:edit_fields["fixVersions"]= copied["fixVersions"]
+    if copied["versions"]:   edit_fields["versions"]   = copied["versions"]
+    # add custom Cust Tech fields
+    for fid, val in copied["custom"].items():
         edit_fields[fid] = val
 
     if edit_fields:
@@ -448,12 +457,8 @@ if st.button("🚀 Create Defect"):
         else:
             st.success("🔁 Copied Labels/Components/Versions/Custom fields from the Test ticket.")
 
-    # Link defect ↔ test ticket (Relates is symmetric)
-    link_payload = {
-        "type": {"name": "Relates"},
-        "inwardIssue": {"key": test_ticket.strip()},
-        "outwardIssue": {"key": issue_key}
-    }
+    # Link defect ↔ test ticket
+    link_payload = {"type": {"name": "Relates"}, "inwardIssue": {"key": test_ticket.strip()}, "outwardIssue": {"key": issue_key}}
     link_resp = requests.post(
         f"{JIRA_BASE_URL}/rest/api/3/issueLink",
         json=link_payload,
@@ -467,10 +472,7 @@ if st.button("🚀 Create Defect"):
     # Attach files
     if uploaded_files:
         for file in uploaded_files:
-            attach_headers = {
-                "X-Atlassian-Token": "no-check",
-                "Accept": "application/json"
-            }
+            attach_headers = {"X-Atlassian-Token": "no-check", "Accept": "application/json"}
             files = {"file": (file.name, file.getvalue())}
             attach_resp = requests.post(
                 f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/attachments",
