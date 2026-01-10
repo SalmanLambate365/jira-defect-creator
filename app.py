@@ -8,8 +8,9 @@ from requests.auth import HTTPBasicAuth
 # -----------------------------
 # Config & secrets
 # -----------------------------
-JIRA_BASE   = st.secrets["JIRA_BASE"]
-ZEPHYR_BASE     = "https://prod-api.zephyr4jiracloud.com/connect"JIRA_EMAIL  = st.secrets["JIRA_EMAIL"]
+JIRA_BASE   = st.secrets["JIRA_BASE_URL"]
+ZEPHYR_BASE     = "https://prod-api.zephyr4jiracloud.com/connect"
+JIRA_EMAIL  = st.secrets["JIRA_EMAIL"]
 ZEPHYR_ACCESS   = st.secrets["ZEPHYR_ACCESS_KEY"]
 ZEPHYR_SECRET   = st.secrets["ZEPHYR_SECRET_KEY"]
 ATL_ACCOUNT_ID  = st.secrets["ATLASSIAN_ACCOUNT_ID"]
