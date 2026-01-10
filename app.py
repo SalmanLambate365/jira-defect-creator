@@ -89,7 +89,7 @@ if st.button("Create Defect"):
             "issuetype": {"name": ISSUE_TYPE},
             "summary": summary,
             "description": adf_text(description_text),
-            "priority": {"name": severity},
+            "severity": {"name": severity},
             "components": optional_list_field(component),
             "fixVersions": optional_list_field(fix_version),
             "versions": optional_list_field(affected_version)
