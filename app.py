@@ -1,111 +1,116 @@
 import streamlit as st
 import requests
-import base64
+import json
+from requests.auth import HTTPBasicAuth
 
-st.set_page_config(page_title="Jira Defect Creator", layout="centered")
+# ---------------- PAGE CONFIG ----------------
+st.set_page_config(page_title="CT JIRA Defect Creator", layout="centered")
+st.title("🐞 CT – JIRA Defect Creator")
 
-st.title("🐞 Defect Creator")
-
-# ---- Secrets ----
-JIRA_URL = st.secrets["JIRA_BASE_URL"]
+# ---------------- JIRA CONFIG ----------------
+JIRA_BASE_URL = st.secrets["JIRA_BASE_URL"]
 JIRA_EMAIL = st.secrets["JIRA_EMAIL"]
-JIRA_TOKEN = st.secrets["JIRA_API_TOKEN"]
-PROJECT_KEY = st.secrets["PROJECT_KEY"]
+JIRA_API_TOKEN = st.secrets["JIRA_API_TOKEN"]
 
-auth = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_TOKEN}".encode()).decode()
+auth = HTTPBasicAuth(JIRA_EMAIL, JIRA_API_TOKEN)
 headers = {
-    "Authorization": f"Basic {auth}",
     "Accept": "application/json",
     "Content-Type": "application/json"
 }
 
-# ---- UI ----
-test_ticket = st.text_input("Test Ticket ID (e.g. TEST-123)")
-failed_step = st.text_area("Failed Test Step")
-expected_result = st.text_area("Expected Result")
-actual_result = st.text_area("Actual Result")
+# ---------------- USER INPUT ----------------
+st.subheader("Failed Test Details")
 
-priority = st.selectbox("Priority", ["High", "Medium", "Low"])
+test_ticket = st.text_input("Test Ticket Number (CT-xxx)", placeholder="CT-123")
+failed_step = st.text_input("Failed Test Step Number", placeholder="Step 3")
 
-uploaded_files = st.file_uploader(
-    "Upload evidence (screenshots / logs)",
-    accept_multiple_files=True
+severity = st.selectbox(
+    "Severity",
+    ["Sev-1", "Sev-2", "Sev-3", "Sev-4"]
 )
 
+test_phase = st.selectbox(
+    "Test Phase",
+    ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"]
+)
+
+st.divider()
+
+# ---------------- CREATE DEFECT ----------------
 if st.button("Create Defect"):
-    if not test_ticket or not failed_step:
-        st.error("Test Ticket ID and Failed Step are mandatory")
-    else:
-        payload = {
-            "fields": {
-                "project": {"key": PROJECT_KEY},
-                "summary": f"Failure in {test_ticket} – {failed_step[:50]}",
-                "issuetype": {"name": "Bug"},
-                "priority": {"name": priority},
-                "description": {
-                    "type": "doc",
-                    "version": 1,
-                    "content": [
-                        {
-                            "type": "paragraph",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": f"""
+    if not test_ticket:
+        st.error("❌ Test Ticket Number is mandatory")
+        st.stop()
+
+    # ---- Fetch Test Ticket ----
+    issue_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{test_ticket}"
+    issue_resp = requests.get(issue_url, headers=headers, auth=auth)
+
+    if issue_resp.status_code != 200:
+        st.error("❌ Unable to fetch test ticket")
+        st.code(issue_resp.text)
+        st.stop()
+
+    issue_data = issue_resp.json()
+    fields = issue_data.get("fields", {})
+
+    summary = fields.get("summary", "")
+    description = fields.get("description", "")
+
+    # ---- Build Defect Description ----
+    defect_description = f"""
 Test Ticket: {test_ticket}
+Failed Step: {failed_step}
+Severity: {severity}
+Test Phase: {test_phase}
 
-Failed Step:
-{failed_step}
+----------------------------------
+Test Summary:
+{summary}
 
-Expected Result:
-{expected_result}
-
-Actual Result:
-{actual_result}
+Test Description:
+{description}
 """
-                                }
-                            ]
-                        }
-                    ]
-                }
-            }
+
+    # ---- Create Defect Payload ----
+    defect_payload = {
+        "fields": {
+            "project": {"key": "CT"},
+            "summary": f"[AUTO] Defect from {test_ticket} - Step {failed_step}",
+            "description": defect_description,
+            "issuetype": {"name": "Defect"}
+        }
+    }
+
+    create_url = f"{JIRA_BASE_URL}/rest/api/3/issue"
+    create_resp = requests.post(
+        create_url,
+        headers=headers,
+        auth=auth,
+        data=json.dumps(defect_payload)
+    )
+
+    if create_resp.status_code == 201:
+        defect_key = create_resp.json()["key"]
+        st.success(f"✅ Defect created successfully: {defect_key}")
+
+        # ---- Link Defect to Test Ticket ----
+        link_payload = {
+            "type": {"name": "Relates"},
+            "inwardIssue": {"key": defect_key},
+            "outwardIssue": {"key": test_ticket}
         }
 
-        response = requests.post(
-            f"{JIRA_URL}/rest/api/3/issue",
+        link_url = f"{JIRA_BASE_URL}/rest/api/3/issueLink"
+        requests.post(
+            link_url,
             headers=headers,
-            json=payload
+            auth=auth,
+            data=json.dumps(link_payload)
         )
 
-        if response.status_code == 201:
-            defect_key = response.json()["key"]
-            st.success(f"Defect created successfully: {defect_key}")
+        st.success("🔗 Defect linked to test ticket")
 
-            # ---- Link defect to test ticket ----
-            link_payload = {
-                "type": {"name": "is caused by"},
-                "inwardIssue": {"key": test_ticket},
-                "outwardIssue": {"key": defect_key}
-            }
-
-            requests.post(
-                f"{JIRA_URL}/rest/api/3/issueLink",
-                headers=headers,
-                json=link_payload
-            )
-
-            # ---- Attach files ----
-            for file in uploaded_files:
-                attach_headers = {
-                    "Authorization": f"Basic {auth}",
-                    "X-Atlassian-Token": "no-check"
-                }
-                requests.post(
-                    f"{JIRA_URL}/rest/api/3/issue/{defect_key}/attachments",
-                    headers=attach_headers,
-                    files={"file": (file.name, file.getvalue())}
-                )
-
-            st.info("Defect linked to test ticket and evidence attached.")
-        else:
-            st.error(f"Error creating defect: {response.text}")
+    else:
+        st.error("❌ Defect creation failed")
+        st.code(create_resp.text)
