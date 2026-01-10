@@ -1,28 +1,51 @@
 import streamlit as st
 import requests
-import json
-from requests.auth import HTTPBasicAuth
+import base64
 
-# ---------------- PAGE CONFIG ----------------
-st.set_page_config(page_title="CT JIRA Defect Creator", layout="centered")
-st.title("🐞 CT – JIRA Defect Creator")
-
-# ---------------- JIRA CONFIG ----------------
+# ---------------- CONFIG ----------------
 JIRA_BASE_URL = st.secrets["JIRA_BASE_URL"]
 JIRA_EMAIL = st.secrets["JIRA_EMAIL"]
 JIRA_API_TOKEN = st.secrets["JIRA_API_TOKEN"]
 
-auth = HTTPBasicAuth(JIRA_EMAIL, JIRA_API_TOKEN)
-headers = {
+PROJECT_KEY = "CT"
+ISSUE_TYPE = "Defect"
+
+auth_string = f"{JIRA_EMAIL}:{JIRA_API_TOKEN}"
+auth_bytes = base64.b64encode(auth_string.encode()).decode()
+
+HEADERS = {
+    "Authorization": f"Basic {auth_bytes}",
     "Accept": "application/json",
     "Content-Type": "application/json"
 }
 
-# ---------------- USER INPUT ----------------
-st.subheader("Failed Test Details")
+# ---------------- HELPERS ----------------
+def optional_list_field(value):
+    return [{"name": value}] if value else []
 
-test_ticket = st.text_input("Test Ticket Number (CT-xxx)", placeholder="CT-123")
-failed_step = st.text_input("Failed Test Step Number", placeholder="Step 3")
+def adf_text(text):
+    return {
+        "type": "doc",
+        "version": 1,
+        "content": [{
+            "type": "paragraph",
+            "content": [{
+                "type": "text",
+                "text": text
+            }]
+        }]
+    }
+
+def get_issue(issue_key):
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}"
+    r = requests.get(url, headers=HEADERS)
+    return r.json() if r.status_code == 200 else None
+
+# ---------------- UI ----------------
+st.title("🐞 Jira Defect Creator from Test Ticket")
+
+test_ticket = st.text_input("Test Ticket Number (e.g. CT-123)")
+failed_step = st.text_input("Failed Test Step Number")
 
 severity = st.selectbox(
     "Severity",
@@ -34,83 +57,77 @@ test_phase = st.selectbox(
     ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"]
 )
 
-st.divider()
+fix_version = st.text_input("Fix Version (optional)")
+affected_version = st.text_input("Affected Version (optional)")
+component = st.text_input("Component (optional)")
+
+uploaded_files = st.file_uploader(
+    "Attach Evidence (screenshots, logs)",
+    accept_multiple_files=True
+)
 
 # ---------------- CREATE DEFECT ----------------
 if st.button("Create Defect"):
-    if not test_ticket:
-        st.error("❌ Test Ticket Number is mandatory")
+
+    if not test_ticket or not failed_step:
+        st.error("Test Ticket and Failed Step are mandatory")
         st.stop()
 
-    # ---- Fetch Test Ticket ----
-    issue_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{test_ticket}"
-    issue_resp = requests.get(issue_url, headers=headers, auth=auth)
+    test_issue = get_issue(test_ticket)
 
-    if issue_resp.status_code != 200:
-        st.error("❌ Unable to fetch test ticket")
-        st.code(issue_resp.text)
-        st.stop()
+    summary = f"Defect from {test_ticket} – Failed Step {failed_step}"
+    description_text = (
+        f"Test Ticket: {test_ticket}\n"
+        f"Failed Step: {failed_step}\n"
+        f"Severity: {severity}\n"
+        f"Test Phase: {test_phase}"
+    )
 
-    issue_data = issue_resp.json()
-    fields = issue_data.get("fields", {})
-
-    summary = fields.get("summary", "")
-    description = fields.get("description", "")
-
-    # ---- Build Defect Description ----
-    defect_description = f"""
-Test Ticket: {test_ticket}
-Failed Step: {failed_step}
-Severity: {severity}
-Test Phase: {test_phase}
-
-----------------------------------
-Test Summary:
-{summary}
-
-Test Description:
-{description}
-"""
-
-    # ---- Create Defect Payload ----
     defect_payload = {
         "fields": {
-            "project": {"key": "CT"},
-            "summary": f"[AUTO] Defect from {test_ticket} - Step {failed_step}",
-            "description": defect_description,
-            "issuetype": {"name": "Defect"}
+            "project": {"key": PROJECT_KEY},
+            "issuetype": {"name": ISSUE_TYPE},
+            "summary": summary,
+            "description": adf_text(description_text),
+            "priority": {"name": severity},
+            "components": optional_list_field(component),
+            "fixVersions": optional_list_field(fix_version),
+            "versions": optional_list_field(affected_version)
         }
     }
 
     create_url = f"{JIRA_BASE_URL}/rest/api/3/issue"
-    create_resp = requests.post(
-        create_url,
-        headers=headers,
-        auth=auth,
-        data=json.dumps(defect_payload)
-    )
+    response = requests.post(create_url, headers=HEADERS, json=defect_payload)
 
-    if create_resp.status_code == 201:
-        defect_key = create_resp.json()["key"]
-        st.success(f"✅ Defect created successfully: {defect_key}")
+    if response.status_code != 201:
+        st.error("❌ Defect creation failed")
+        st.code(response.text)
+        st.stop()
 
-        # ---- Link Defect to Test Ticket ----
-        link_payload = {
-            "type": {"name": "Relates"},
-            "inwardIssue": {"key": defect_key},
-            "outwardIssue": {"key": test_ticket}
+    defect_key = response.json()["key"]
+    st.success(f"✅ Defect created: {defect_key}")
+
+    # -------- Link Defect to Test Ticket --------
+    link_payload = {
+        "type": {"name": "Relates"},
+        "inwardIssue": {"key": defect_key},
+        "outwardIssue": {"key": test_ticket}
+    }
+
+    link_url = f"{JIRA_BASE_URL}/rest/api/3/issueLink"
+    requests.post(link_url, headers=HEADERS, json=link_payload)
+
+    # -------- Upload Attachments --------
+    if uploaded_files:
+        attach_headers = {
+            "Authorization": f"Basic {auth_bytes}",
+            "X-Atlassian-Token": "no-check"
         }
 
-        link_url = f"{JIRA_BASE_URL}/rest/api/3/issueLink"
-        requests.post(
-            link_url,
-            headers=headers,
-            auth=auth,
-            data=json.dumps(link_payload)
-        )
+        attach_url = f"{JIRA_BASE_URL}/rest/api/3/issue/{defect_key}/attachments"
 
-        st.success("🔗 Defect linked to test ticket")
+        for file in uploaded_files:
+            files = {"file": (file.name, file, file.type)}
+            requests.post(attach_url, headers=attach_headers, files=files)
 
-    else:
-        st.error("❌ Defect creation failed")
-        st.code(create_resp.text)
+    st.success("📎 Attachments uploaded & defect linked successfully")
