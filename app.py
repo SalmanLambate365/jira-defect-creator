@@ -336,42 +336,36 @@ def normalize_step(s):
     s = re.sub(r'\s+', ' ', s)
     return s
 
+
 def ai_lite_draft(context):
     """
-    Produce cleaner, business‑focused content:
-    - Summary: from failed step + phase
-    - Issue Description: concise impact statement
-    - Steps: keep, but mark failed
-    - Expected: generic acceptance of selection
-    - Actual: concise failure + evidence note
+    Improved AI-lite draft:
+    - Adds impact statement
+    - Includes Test Key and Summary
+    - Formats steps clearly
     """
     raw_steps = context.get("zephyr_steps") or []
-    zephyr_expected = context.get("zephyr_expected") or []
-    steps = [normalize_step(x) for x in raw_steps if x and x.strip()]
+    steps = [normalize_step(x) for x in raw_steps if x.strip()]
     failed_n = int(context.get("failed_step_num") or 0)
     idx = failed_n - 1 if failed_n >= 1 else None
-    selected_step = steps[idx] if (idx is not None and idx < len(steps)) else None
-    phase = (context.get("test_phase") or "").strip()
+    if idx is not None and idx < len(steps):
+        steps[idx] = f"[FAILED] {steps[idx]}"
 
-    # Extract option + field (from step text "Select 'No' from 'Field' dropdown")
-    option, field = None, None
-    if selected_step:
-        m = re.search(r"Select\s+'([^']+)'\s+from\s+'([^']+)'", selected_step, flags=re.I)
-        if m:
-            option, field = m.group(1), m.group(2)
+    summary = context.get("test_key") + " - " + (context.get("test_issue_description") or "Observed issue during test execution")
+    impact = f"This issue occurred during {context.get('test_phase')} testing and prevents completion of the workflow, potentially blocking downstream processes."
 
-    # Expected Results
-    expected_txt = (context.get("test_expected_results") or "").strip()
-    if not expected_txt:
-        expected_txt = "System should accept the selection and continue the workflow without errors."
+    expected = context.get("test_expected_results") or "System should accept the selection and continue without errors."
+    actual = context.get("test_actual_results") or "System fails to proceed after selection; blocking the process."
 
-    # Actual Results
-    actual_txt = (context.get("test_actual_results") or "").strip()
-    if not actual_txt:
-        if option:
-            actual_txt = f"System fails to proceed after selecting '{option}', blocking the process. See attachments for details."
-        else:
-            actual_txt = "System fails to proceed, blocking the process. See attachments for details."
+    return {
+        "summary_suggestion": summary,
+        "issue_description": impact,
+        "steps_to_reproduce": steps,
+        "expected_results": expected,
+        "actual_results": actual,
+        "confidence": "high"
+    }
+
 
     # Issue Description (business context first)
     if option and field:
