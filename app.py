@@ -79,10 +79,7 @@ def get_field_id_by_name(field_name: str) -> str | None:
     if field_name in _FIELD_ID_CACHE:
         return _FIELD_ID_CACHE[field_name]
     url = f"{JIRA_BASE_URL}/rest/api/3/field"
-    r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth(), timeout=60)
-    r.raise_for_status()
-    for f in r.json():
-        if (f.get("name") or "").strip().lower() == field_name.strip().lower():
+        if (f.get("name") or "").strip().lower() == field_name.strip().lower():    r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth(), timeout=60)
             _FIELD_ID_CACHE[field_name] = f["id"]
             return f["id"]
     return None
@@ -319,7 +316,7 @@ def make_adf_description_from_sources(
     return {"type": "doc", "version": 1, "content": content}
 
 # ============================================================
-# AI-LITE (NO EXTERNAL MODEL) HELPERS
+# AI-LITE (NO EXTERNAL MODEL) HELPERS — BOUND TO FAILED STEP
 # ============================================================
 def normalize_step(s: str) -> str:
     """Basic cleanup: remove numbering, collapse whitespace, keep imperative style if possible."""
@@ -331,37 +328,70 @@ def normalize_step(s: str) -> str:
 
 def ai_lite_draft(context: dict) -> dict:
     """
-    Deterministic drafting: normalize steps, compose Expected/Actual/Impact,
-    mark failed step, add missing info hints.
+    Deterministic drafting: bind Issue Description & Expected to the selected failed step,
+    compose Actual & Impact conservatively if empty, mark failed step, add missing info hints.
     """
-    steps = [normalize_step(x) for x in (context.get("zephyr_steps") or []) if x and x.strip()]
+    raw_steps = context.get("zephyr_steps") or []
+    zephyr_expected = context.get("zephyr_expected") or []
+    steps = [normalize_step(x) for x in raw_steps if x and x.strip()]
+
     failed_n = int(context.get("failed_step_num") or 0)
+    idx = failed_n - 1 if failed_n >= 1 else None
+    selected_step = steps[idx] if (idx is not None and idx < len(steps)) else None
 
+    # Expected Results: prefer Test field; else expected for THIS step; else all Zephyr expected; else not provided
     expected_txt = (context.get("test_expected_results") or "").strip()
-    actual_txt   = (context.get("test_actual_results") or "").strip()
-    impact_txt   = (context.get("test_impact") or "").strip()
-
-    # Expected: prefer Test field else Zephyr expected collapsed
     if not expected_txt:
-        zexp = "; ".join([x.strip() for x in (context.get("zephyr_expected") or []) if x.strip()])
-        expected_txt = zexp or "(not provided)"
+        if idx is not None and idx < len(zephyr_expected):
+            expected_txt = (zephyr_expected[idx] or "").strip() or "(not provided)"
+        else:
+            zexp_join = "; ".join([x.strip() for x in zephyr_expected if x.strip()])
+            expected_txt = zexp_join or "(not provided)"
 
-    # Actual/Impact conservative defaults
-    actual_txt = actual_txt or "(not provided)"
-    impact_txt = impact_txt or "(not provided)"
+    # Actual Results: prefer Test field; else bind to failed step with attachments note
+    actual_txt = (context.get("test_actual_results") or "").strip()
+    if not actual_txt:
+        if selected_step:
+            actual_txt = f"Observed failure at step {failed_n}: {selected_step}. See attachments for details."
+        else:
+            actual_txt = "Observed failure during execution. See attachments for details."
 
-    # Description: concise from Test description
+    # Impact: prefer Test field; else derive from severity/test phase and failed step presence
+    impact_txt = (context.get("test_impact") or "").strip()
+    if not impact_txt:
+        sev = (context.get("severity") or "").strip()
+        phase = (context.get("test_phase") or "").strip()
+        base_impact = "Failure prevents completion of the test scenario"
+        if selected_step:
+            base_impact = f"Failure at step {failed_n} ('{selected_step}') prevents completion of the scenario"
+        sev_hint = {
+            "Sev-1": "Critical user impact; workaround unlikely.",
+            "Sev-2": "High impact; affects major user flows.",
+            "Sev-3": "Moderate impact; limited scope.",
+            "Sev-4": "Low impact; minor inconvenience."
+        }.get(sev, "")
+        phase_hint = f" Detected in {phase}." if phase else ""
+        impact_txt = (base_impact + "." + phase_hint + (" " + sev_hint if sev_hint else "")).strip()
+
+    # Issue Description: bind to failed step if present, else fallback to test description
     base_desc = (context.get("test_issue_description") or "").strip()
-    issue_desc = base_desc or f"Related Test Ticket: {context.get('test_key')}"
+    if selected_step:
+        issue_desc = f"Test {context.get('test_key')} failed at step {failed_n}: {selected_step}."
+    else:
+        issue_desc = base_desc or f"Failure reported in Test {context.get('test_key')}."
 
-    # Mark failed step if index valid
-    if failed_n >= 1 and failed_n <= len(steps):
-        steps[failed_n - 1] = f"[FAILED] {steps[failed_n - 1]}"
+    # Mark failed step in steps list for visibility
+    if idx is not None and idx < len(steps):
+        steps[idx] = f"[FAILED] {steps[idx]}"
 
+    # Missing info hints
     missing = []
-    if actual_txt == "(not provided)": missing.append("Actual results not captured")
-    if impact_txt == "(not provided)": missing.append("Impact not described")
-    if not steps: missing.append("Steps to reproduce missing from Zephyr")
+    if not context.get("zephyr_steps"):
+        missing.append("Steps to reproduce missing from Zephyr")
+    if not (context.get("test_actual_results") or "").strip():
+        missing.append("Actual results not captured in Test ticket")
+    if not (context.get("test_impact") or "").strip():
+        missing.append("Impact not described in Test ticket")
 
     return {
         "issue_description": issue_desc,
@@ -483,6 +513,7 @@ if st.button("🧠 Generate Draft (AI-lite)"):
 
     ai_out = ai_lite_draft(ctx)
     st.session_state["ai_out"] = ai_out
+    st.session_state["ctx"] = ctx  # keep context for Create if needed
     st.success("AI-lite draft generated. Review and edit below.")
 
 # Editable preview
@@ -555,6 +586,29 @@ if st.button("🚀 Create Defect"):
 
     evidence_names = [f.name for f in (uploaded_files or [])]
     summary = f"[{test_ticket.strip()}] Failed at Step {int(failed_step_num)}"
+
+    # If AI-lite is enabled but user didn't click "Generate", auto-generate now
+    ctx = st.session_state.get("ctx") or {
+        "project_key": PROJECT_KEY,
+        "test_key": test_ticket.strip(),
+        "failed_step_num": int(failed_step_num),
+        "severity": severity,
+        "priority": priority,
+        "test_phase": test_phase,
+        "zephyr_steps": steps_list,
+        "zephyr_expected": expected_from_zephyr,
+        "test_issue_description": copied["text"]["issue_description"],
+        "test_expected_results": copied["text"]["expected_results"],
+        "test_actual_results": copied["text"]["actual_results"],
+        "test_impact": copied["text"]["impact"],
+        "labels": copied.get("labels", []),
+        "components": copied.get("components", []),
+        "versions": copied.get("versions", []),
+        "fixVersions": copied.get("fixVersions", []),
+        "evidence_names": evidence_names
+    }
+    if use_ai and "ai_out" not in st.session_state:
+        st.session_state["ai_out"] = ai_lite_draft(ctx)
 
     # Choose description builder
     if use_ai and "ai_out" in st.session_state:
@@ -657,3 +711,5 @@ if st.button("🚀 Create Defect"):
 
     st.success("📎 Attachments uploaded, fields synced & Test Ticket linked")
     st.link_button("Open in Jira", f"{JIRA_BASE_URL}/browse/{issue_key}")
+    r.raise_for_status()
+    for f in r.json():
