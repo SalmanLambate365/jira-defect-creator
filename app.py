@@ -452,57 +452,40 @@ def get_zephyr_steps_and_expected(jira_test_key, auth):
             expected.append(exp_txt)
     return steps, expected
 
-def find_latest_execution_id(jira_test_key, auth):
-    """
-    Robustly find the latest Zephyr execution for a given Test issue.
 
-    Strategy:
-      1) Try Cloud endpoint: GET /public/rest/api/1.0/executions?issueId=&projectId=
-      2) Fallback: ZQL via GET /public/rest/api/1.0/zql/executeSearch with ORDER BY
-    """
+def find_latest_execution_id(jira_test_key, auth):
     issue_id = jira_issue_id_from_key(jira_test_key, auth)
     project_id = jira_project_id_from_key(PROJECT_KEY, auth)
 
-    # --- 1) Preferred: direct executions listing (Cloud) ---
+    # Try direct executions listing
     try:
         rel = "/public/rest/api/1.0/executions"
         params = {"issueId": issue_id, "projectId": project_id, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
-
-        execs = []
-        if isinstance(data, dict):
-            # Some tenants respond as {"executions":[...]}; others historically nested {"searchResult":{"executions":[...]}}
-            execs = (data.get("executions") or
-                     (data.get("searchResult") or {}).get("executions") or [])
-        elif isinstance(data, list):
-            execs = data
-
+        st.write("DEBUG: Executions API response:", data)  # Debug log
+        execs = (data.get("executions") or (data.get("searchResult") or {}).get("executions") or [])
         if execs:
             execs_sorted = sorted(execs, key=lambda e: e.get("orderId", 0), reverse=True)
-            top = execs_sorted[0]
-            return str(top.get("id")) if top.get("id") is not None else None
-    except Exception:
-        # Continue to fallback if endpoint not available or empty
-        pass
+            return str(execs_sorted[0].get("id"))
+    except Exception as e:
+        st.warning(f"Executions API failed: {e}")
 
-    # --- 2) Fallback: ZQL search (documented; flexible across tenants) ---
+    # Fallback: ZQL search
     try:
         rel = "/public/rest/api/1.0/zql/executeSearch"
         zql = f'issue = "{jira_test_key}" ORDER BY executionDate DESC'
         params = {"zqlQuery": zql, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
-
-        execs = []
-        if isinstance(data, dict):
-            execs = (data.get("searchResult") or {}).get("executions") or []
+        st.write("DEBUG: ZQL API response:", data)  # Debug log
+        execs = (data.get("searchResult") or {}).get("executions") or []
         if execs:
             execs_sorted = sorted(execs, key=lambda e: e.get("orderId", 0), reverse=True)
-            top = execs_sorted[0]
-            return str(top.get("id")) if top.get("id") is not None else None
-    except Exception:
-        pass
+            return str(execs_sorted[0].get("id"))
+    except Exception as e:
+        st.warning(f"ZQL API failed: {e}")
 
     return None
+
 
 def link_defect_to_execution(execution_id, defect_issue_key, auth):
     defect_issue_id = jira_issue_id_from_key(defect_issue_key, auth)
