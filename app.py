@@ -453,20 +453,23 @@ def get_zephyr_steps_and_expected(jira_test_key, auth):
     return steps, expected
 
 
+
 def find_latest_execution_id(jira_test_key, auth):
     issue_id = jira_issue_id_from_key(jira_test_key, auth)
     project_id = jira_project_id_from_key(PROJECT_KEY, auth)
 
-    # Try direct executions listing
     try:
         rel = "/public/rest/api/1.0/executions"
         params = {"issueId": issue_id, "projectId": project_id, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
         st.write("DEBUG: Executions API response:", data)  # Debug log
-        execs = (data.get("executions") or (data.get("searchResult") or {}).get("executions") or [])
+
+        execs = data.get("executions") or []
         if execs:
-            execs_sorted = sorted(execs, key=lambda e: e.get("orderId", 0), reverse=True)
-            return str(execs_sorted[0].get("id"))
+            # Extract execution IDs from nested structure
+            exec_ids = [e.get("execution", {}).get("id") for e in execs if e.get("execution")]
+            if exec_ids:
+                return exec_ids[0]  # Return the first (latest) execution ID
     except Exception as e:
         st.warning(f"Executions API failed: {e}")
 
@@ -476,15 +479,18 @@ def find_latest_execution_id(jira_test_key, auth):
         zql = f'issue = "{jira_test_key}" ORDER BY executionDate DESC'
         params = {"zqlQuery": zql, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
-        st.write("DEBUG: ZQL API response:", data)  # Debug log
+        st.write("DEBUG: ZQL API response:", data)
+
         execs = (data.get("searchResult") or {}).get("executions") or []
         if execs:
-            execs_sorted = sorted(execs, key=lambda e: e.get("orderId", 0), reverse=True)
-            return str(execs_sorted[0].get("id"))
+            exec_ids = [e.get("execution", {}).get("id") for e in execs if e.get("execution")]
+            if exec_ids:
+                return exec_ids[0]
     except Exception as e:
         st.warning(f"ZQL API failed: {e}")
 
     return None
+
 
 
 def link_defect_to_execution(execution_id, defect_issue_key, auth):
@@ -579,7 +585,7 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
 # STREAMLIT UI
 # ============================================================
 st.set_page_config(page_title="Jira Defect Creator", layout="centered")
-st.title("🐞 Create Jira Defect from Test Ticket")
+st.title("🐞 AutoDefect Loggerr")
 st.markdown("**Fields marked with * are mandatory**")
 
 test_ticket     = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
