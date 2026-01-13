@@ -74,15 +74,40 @@ def jira_project_id_from_key(project_key: str) -> int:
 # ---- Field ID cache & resolver ----
 _FIELD_ID_CACHE: dict[str, str] = {}
 
+
+# ---- Field ID cache & resolver ----
+_FIELD_ID_CACHE: dict[str, str] = {}
+
 def get_field_id_by_name(field_name: str) -> str | None:
-    """Resolve Jira field ID by display name (case-insensitive)."""
-    if field_name in _FIELD_ID_CACHE:
-        return _FIELD_ID_CACHE[field_name]
+    """
+    Resolve Jira field ID by display name (case-insensitive).
+    Returns the field ID or None if not found.
+    """
+    # Return from cache if already resolved
+    cached = _FIELD_ID_CACHE.get(field_name)
+    if cached:
+        return cached
+
     url = f"{JIRA_BASE_URL}/rest/api/3/field"
-        if (f.get("name") or "").strip().lower() == field_name.strip().lower():    r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth(), timeout=60)
-            _FIELD_ID_CACHE[field_name] = f["id"]
-            return f["id"]
+    r = requests.get(
+        url,
+        headers={"Accept": "application/json"},
+        auth=get_auth(),
+        timeout=60
+    )
+    r.raise_for_status()
+
+    for f in r.json():
+        name = (f.get("name") or "").strip().lower()
+        if name == field_name.strip().lower():
+            fid = f.get("id")
+            if fid:
+                _FIELD_ID_CACHE[field_name] = fid
+                return fid
+
+    # Not found
     return None
+
 
 # ============================================================
 # ZEPHYR (JWT + GET TEST STEPS)
