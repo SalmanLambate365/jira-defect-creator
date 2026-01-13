@@ -18,6 +18,7 @@ import json
 import time
 import urllib.parse
 import re
+
 import streamlit as st
 import requests
 from requests.auth import HTTPBasicAuth
@@ -59,31 +60,26 @@ def get_auth():
 def headers_json():
     return {"Accept": "application/json", "Content-Type": "application/json"}
 
-def jira_issue_id_from_key(issue_key: str) -> str:
+def jira_issue_id_from_key(issue_key):
     url = f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}"
     r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth(), timeout=30)
     r.raise_for_status()
     return r.json()["id"]
 
-def jira_project_id_from_key(project_key: str) -> int:
+def jira_project_id_from_key(project_key):
     url = f"{JIRA_BASE_URL}/rest/api/3/project/{project_key}"
     r = requests.get(url, headers={"Accept": "application/json"}, auth=get_auth(), timeout=30)
     r.raise_for_status()
     return int(r.json()["id"])
 
 # ---- Field ID cache & resolver ----
-_FIELD_ID_CACHE: dict[str, str] = {}
+_FIELD_ID_CACHE = {}
 
-
-# ---- Field ID cache & resolver ----
-_FIELD_ID_CACHE: dict[str, str] = {}
-
-def get_field_id_by_name(field_name: str) -> str | None:
+def get_field_id_by_name(field_name):
     """
     Resolve Jira field ID by display name (case-insensitive).
     Returns the field ID or None if not found.
     """
-    # Return from cache if already resolved
     cached = _FIELD_ID_CACHE.get(field_name)
     if cached:
         return cached
@@ -105,14 +101,12 @@ def get_field_id_by_name(field_name: str) -> str | None:
                 _FIELD_ID_CACHE[field_name] = fid
                 return fid
 
-    # Not found
     return None
-
 
 # ============================================================
 # ZEPHYR (JWT + GET TEST STEPS)
 # ============================================================
-def build_zephyr_jwt(method: str, relative_path: str, query_params=None, expires_in: int = 360) -> str:
+def build_zephyr_jwt(method, relative_path, query_params=None, expires_in=360):
     method = method.upper()
     query_params = query_params or {}
     canonical_qs = urllib.parse.urlencode(sorted(query_params.items()), doseq=True)
@@ -128,7 +122,7 @@ def build_zephyr_jwt(method: str, relative_path: str, query_params=None, expires
     }
     header = {"typ": "JWT", "alg": "HS256"}
 
-    def b64(obj: dict) -> bytes:
+    def b64(obj):
         return base64.urlsafe_b64encode(json.dumps(obj, separators=(",", ":")).encode()).rstrip(b"=")
 
     signing_input = b".".join([b64(header), b64(payload)])
@@ -137,7 +131,7 @@ def build_zephyr_jwt(method: str, relative_path: str, query_params=None, expires
     ).rstrip(b"=")
     return signing_input.decode() + "." + signature.decode()
 
-def zephyr_get(relative_path: str, query_params=None):
+def zephyr_get(relative_path, query_params=None):
     query_params = query_params or {}
     jwt = build_zephyr_jwt("GET", relative_path, query_params)
     headers = {
@@ -151,7 +145,7 @@ def zephyr_get(relative_path: str, query_params=None):
         raise RuntimeError(f"Zephyr GET {relative_path} failed {r.status_code}: {r.text[:300]}")
     return r.json()
 
-def get_zephyr_steps_and_expected(jira_test_key: str) -> tuple[list[str], list[str]]:
+def get_zephyr_steps_and_expected(jira_test_key):
     """
     Returns ordered step descriptions and expected results for Steps to reproduce/Expected section.
     """
@@ -172,7 +166,7 @@ def get_zephyr_steps_and_expected(jira_test_key: str) -> tuple[list[str], list[s
 # ============================================================
 # FETCH FIELDS FROM TEST TICKET → TEMP STORE
 # ============================================================
-def fetch_test_ticket_fields_and_text(test_key: str) -> dict:
+def fetch_test_ticket_fields_and_text(test_key):
     """
     Pull labels/components/fixVersions/versions and custom fields by name,
     plus the Test ticket's **description** and the 3 text fields (Expected/Actual/Impact).
@@ -261,37 +255,37 @@ def fetch_test_ticket_fields_and_text(test_key: str) -> dict:
 # ============================================================
 # ADF BUILDERS (sections as requested)
 # ============================================================
-def adf_text(text: str, marks: list | None = None):
+def adf_text(text, marks=None):
     node = {"type": "text", "text": text}
     if marks: node["marks"] = marks
     return node
 
-def adf_paragraph(text: str):
+def adf_paragraph(text):
     return {"type": "paragraph", "content": [adf_text(text)]}
 
-def adf_heading(text: str, level: int = 2):
+def adf_heading(text, level=2):
     return {"type": "heading", "attrs": {"level": level}, "content": [adf_text(text)]}
 
-def adf_bullet_list(items: list[str]):
+def adf_bullet_list(items):
     if not items: return []
     return [{"type": "bulletList",
              "content": [{"type": "listItem","content":[adf_paragraph(i)]} for i in items]}]
 
-def adf_ordered_list(items: list[str]):
+def adf_ordered_list(items):
     if not items: return []
     return [{"type": "orderedList",
              "content": [{"type": "listItem","content":[adf_paragraph(i)]} for i in items]}]
 
 def make_adf_description_from_sources(
-    test_key: str,
-    issue_description_txt: str,
-    steps_list: list[str],
-    expected_results_txt: str | None,
-    expected_from_zephyr: list[str],
-    actual_results_txt: str | None,
-    impact_txt: str | None,
-    evidence_names: list[str]
-) -> dict:
+    test_key,
+    issue_description_txt,
+    steps_list,
+    expected_results_txt,
+    expected_from_zephyr,
+    actual_results_txt,
+    impact_txt,
+    evidence_names
+):
     """
     Build ADF sections from fetched data:
     - Issue Description (from test ticket description)
@@ -343,15 +337,15 @@ def make_adf_description_from_sources(
 # ============================================================
 # AI-LITE (NO EXTERNAL MODEL) HELPERS — BOUND TO FAILED STEP
 # ============================================================
-def normalize_step(s: str) -> str:
-    """Basic cleanup: remove numbering, collapse whitespace, keep imperative style if possible."""
+def normalize_step(s):
+    """Basic cleanup: remove numbering, collapse whitespace."""
     s = s.strip()
     # Remove numbering like "1) ", "Step 1 - ", "1. "
     s = re.sub(r'^\s*(?:step\s*\d+[\)\:\-]\s*|\d+[\)\.\-]\s*)', '', s, flags=re.I)
     s = re.sub(r'\s+', ' ', s)
     return s
 
-def ai_lite_draft(context: dict) -> dict:
+def ai_lite_draft(context):
     """
     Deterministic drafting: bind Issue Description & Expected to the selected failed step,
     compose Actual & Impact conservatively if empty, mark failed step, add missing info hints.
@@ -429,7 +423,7 @@ def ai_lite_draft(context: dict) -> dict:
         "confidence": "n/a"
     }
 
-def make_adf_from_ai(test_key: str, ai: dict, evidence_names: list[str]) -> dict:
+def make_adf_from_ai(test_key, ai, evidence_names):
     """Convert AI-lite JSON into your Jira ADF document."""
     content = []
 
@@ -578,8 +572,8 @@ if st.button("🚀 Create Defect"):
         timeout=30
     ).json()
 
-    def get_option_id(fields_meta: dict, field_id: str, chosen_label: str) -> str | None:
-        for f in fields_meta.get("fields", []):
+    def get_option_id(fields_meta_obj, field_id, chosen_label):
+        for f in fields_meta_obj.get("fields", []):
             if f.get("fieldId") == field_id:
                 for opt in (f.get("allowedValues") or []):
                     label = opt.get("value") or opt.get("name")
@@ -736,5 +730,3 @@ if st.button("🚀 Create Defect"):
 
     st.success("📎 Attachments uploaded, fields synced & Test Ticket linked")
     st.link_button("Open in Jira", f"{JIRA_BASE_URL}/browse/{issue_key}")
-    r.raise_for_status()
-    for f in r.json():
