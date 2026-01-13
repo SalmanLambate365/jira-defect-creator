@@ -1,17 +1,14 @@
-# app.py
-# ---------------------------------------------------------------------------------
-# Jira Defect Creator (Create defect from Test; copy fields; Zephyr integration)
-# Enhancements:
-#  - Correct mapping of Cust Tech Delivery Team & Cust Tech Product
-#  - Parent field set to Epic linked to the Test ticket's linked Story (best-effort)
-#  - Labels copied excluding 'JiraTestGenAI'
-#  - Improved defect title (uses Test summary or AI suggestion)
-#  - Removed Impact & AI Notes from UI and ADF description
-#  - Clearer description sections with bold highlights in steps
-#  - After linking, transition Test ticket to "Failed" (dynamic transition lookup)
-#  - Link defect to Zephyr execution, fail the failed step & the execution status
-# ---------------------------------------------------------------------------------
 
+# app.py
+# --------------------------------------------------------------------------------
+# - Parent field set to Epic linked to the Test ticket's linked Story (best-effort)# Jira Defect Creator (Create defect from Test; copy fields; Zephyr integration)
+# - Labels copied excluding 'JiraTestGenAI'
+# - Improved defect title (uses Test summary or AI suggestion)
+# - Removed Impact & AI Notes from UI and ADF description
+# - Clearer description sections with bold highlights in steps
+# - After linking, transition Test ticket to "Failed" (dynamic transition lookup)
+# - Link defect to Zephyr execution, fail the failed step & the execution status
+# --------------------------------------------------------------------------------
 import base64
 import hashlib
 import hmac
@@ -35,22 +32,27 @@ TEST_PHASE_FIELD_ID = "customfield_10245"  # Test Phase
 SEVERITY_FIELD_ID   = "customfield_10260"  # Severity
 
 # Resolve these by NAME → ID at runtime (case-insensitive)
-CUST_TECH_PORTFOLIO_NAME   = "Cust Tech Portfolio"
-CUST_TECH_PRODUCT_NAME     = "Cust Tech Product"
-CUST_TECH_DELIVERY_TEAM_NAME = "Cust Tech Delivery Team"
+CUST_TECH_PORTFOLIO_NAME    = "Cust Tech Portfolio"
+CUST_TECH_PRODUCT_NAME      = "Cust Tech Products"
+CUST_TECH_DELIVERY_TEAM_NAME = "Cust Tech Delivery Teams"
 
 # Names for description sections pulled from the Test ticket
 EXPECTED_RESULTS_NAME = "Expected Results"
 ACTUAL_RESULTS_NAME   = "Actual Results"
 IMPACT_NAME           = "Impact"  # kept for fetch compatibility; not shown in UI
 
-# Zephyr Squad Cloud base
+# Zephyr Squad Cloud base (Cloud tenants)
+# Docs: https://support.smartbear.com/zephyr-squad-cloud-v1/docs/en/zephyr-squad-cloud-rest-api.html
 ZEPHYR_BASE = "https://prod-api.zephyr4jiracloud.com/connect"
+
+# Feature flag: some Cloud tenants don’t expose step results via API consistently.
+# SmartBear roadmap item mentions step-result fetch/update via API being limited. (See productboard link)
+# Toggle to True only if your tenant supports GET/PUT of execution step results.
+ENABLE_STEP_UPDATE = False
 
 # ============================================================
 # BASIC HELPERS (AUTH / JIRA COMMON)
 # ============================================================
-
 def get_auth():
     try:
         return HTTPBasicAuth(st.secrets["JIRA_EMAIL"], st.secrets["JIRA_API_TOKEN"])
@@ -97,9 +99,10 @@ def get_field_id_by_name(field_name, auth):
     return None
 
 # ============================================================
-# ZEPHYR (JWT + HELPERS)
+# ZEPHYR (JWT + HELPERS) - Cloud (JWT per request; QSH from path+query)
+# Docs: Cloud base URL + JWT headers + per-request token generation:
+#   https://support.smartbear.com/zephyr-squad-cloud-v1/docs/en/zephyr-squad-cloud-rest-api.html
 # ============================================================
-
 def build_zephyr_jwt(method, relative_path, query_params=None, expires_in=360):
     """
     Generate Zephyr Squad Cloud JWT with 'qsh' = SHA256(METHOD & RELATIVE_PATH & sorted(querystring)).
@@ -132,7 +135,6 @@ def build_zephyr_jwt(method, relative_path, query_params=None, expires_in=360):
     ).rstrip(b"=")
     return signing_input.decode() + "." + signature.decode()
 
-
 def zephyr_request(method, relative_path, query_params=None, json_body=None):
     method = method.upper()
     query_params = query_params or {}
@@ -154,14 +156,11 @@ def zephyr_request(method, relative_path, query_params=None, json_body=None):
             return r.text
     return None
 
-
 def zephyr_get(relative_path, query_params=None):
     return zephyr_request("GET", relative_path, query_params=query_params)
 
-
 def zephyr_post(relative_path, json_body=None, query_params=None):
     return zephyr_request("POST", relative_path, query_params=query_params, json_body=json_body)
-
 
 def zephyr_put(relative_path, json_body=None, query_params=None):
     return zephyr_request("PUT", relative_path, query_params=query_params, json_body=json_body)
@@ -169,7 +168,6 @@ def zephyr_put(relative_path, json_body=None, query_params=None):
 # ============================================================
 # FETCH FIELDS FROM TEST TICKET → TEMP STORE
 # ============================================================
-
 def fetch_test_ticket_fields_and_text(test_key, auth):
     """
     Pull labels/components/fixVersions/versions and custom fields by name,
@@ -183,7 +181,7 @@ def fetch_test_ticket_fields_and_text(test_key, auth):
     actual_id    = get_field_id_by_name(ACTUAL_RESULTS_NAME, auth)
     impact_id    = get_field_id_by_name(IMPACT_NAME, auth)
 
-    standard = ["summary", "labels", "components", "fixVersions", "versions", "description", "issuelinks"]
+    standard   = ["summary", "labels", "components", "fixVersions", "versions", "description", "issuelinks"]
     custom_ids = [fid for fid in [portfolio_id, product_id, team_id, expected_id, actual_id, impact_id] if fid]
     fields_param = ",".join(standard + custom_ids)
 
@@ -204,7 +202,7 @@ def fetch_test_ticket_fields_and_text(test_key, auth):
         "labels": f.get("labels") or [],
         "components": [{"name": c.get("name")} for c in (f.get("components") or [])],
         "fixVersions": [{"name": v.get("name")} for v in (f.get("fixVersions") or [])],
-        "versions":   [{"name": v.get("name")} for v in (f.get("versions") or [])],
+        "versions": [{"name": v.get("name")} for v in (f.get("versions") or [])],
         "custom": {},
         "text": {
             "issue_description": "",  # will render in ADF
@@ -252,8 +250,8 @@ def fetch_test_ticket_fields_and_text(test_key, auth):
         return (v or "").strip() if isinstance(v, str) else ""
 
     if expected_id: result["text"]["expected_results"] = _get_text(expected_id)
-    if actual_id:   result["text"]["actual_results"] = _get_text(actual_id)
-    if impact_id:   result["text"]["impact"] = _get_text(impact_id)
+    if actual_id:   result["text"]["actual_results"]   = _get_text(actual_id)
+    if impact_id:   result["text"]["impact"]           = _get_text(impact_id)
 
     # Capture linked Story key (best-effort via issuelinks)
     for link in (f.get("issuelinks") or []):
@@ -270,7 +268,6 @@ def fetch_test_ticket_fields_and_text(test_key, auth):
 # ============================================================
 # ADF BUILDERS (sections as requested)
 # ============================================================
-
 def adf_text(text, marks=None):
     node = {"type": "text", "text": text}
     if marks: node["marks"] = marks
@@ -285,15 +282,14 @@ def adf_heading(text, level=2):
 def adf_bullet_list(items):
     if not items: return []
     return [{"type": "bulletList",
-            "content": [{"type": "listItem","content":[adf_paragraph(i)]} for i in items]}]
+             "content": [{"type": "listItem","content":[adf_paragraph(i)]} for i in items]}]
 
 def adf_ordered_list(items):
     if not items: return []
     return [{"type": "orderedList",
-            "content": [{"type": "listItem","content":[adf_paragraph(i)]} for i in items]}]
+             "content": [{"type": "listItem","content":[adf_paragraph(i)]} for i in items]}]
 
 # --- ADF helpers (inline strong) ---
-
 def adf_strong_text(text: str):
     return {"type": "text", "text": text, "marks": [{"type": "strong"}]}
 
@@ -334,22 +330,20 @@ def adf_paragraph_with_bold_quotes(line: str):
 # ============================================================
 # AI-LITE HELPERS — Clean, business-focused style
 # ============================================================
-
 def normalize_step(s):
     s = s.strip()
-    s = re.sub(r'^\s*(?:step\s*\d+[)\:\-]\s*|\d+[)\.-]\s*)', '', s, flags=re.I)
+    s = re.sub(r'^\s*(?:step\s*\d+[\):\-\]\s]*)', '', s, flags=re.I)
     s = re.sub(r'\s+', ' ', s)
     return s
-
 
 def ai_lite_draft(context):
     """
     Produce cleaner, business‑focused content:
-      - Summary: from failed step + phase
-      - Issue Description: concise impact statement
-      - Steps: keep, but mark failed
-      - Expected: generic acceptance of selection
-      - Actual: concise failure + evidence note
+    - Summary: from failed step + phase
+    - Issue Description: concise impact statement
+    - Steps: keep, but mark failed
+    - Expected: generic acceptance of selection
+    - Actual: concise failure + evidence note
     """
     raw_steps = context.get("zephyr_steps") or []
     zephyr_expected = context.get("zephyr_expected") or []
@@ -406,7 +400,6 @@ def ai_lite_draft(context):
         "confidence": "n/a"
     }
 
-
 def make_adf_from_ai(test_key, ai, evidence_names):
     content = []
 
@@ -444,7 +437,6 @@ def make_adf_from_ai(test_key, ai, evidence_names):
 # ============================================================
 # ZEPHYR: STEPS/EXPECTED, EXECUTION SEARCH, STEP FAIL, LINK DEFECT, FAIL EXECUTION
 # ============================================================
-
 def get_zephyr_steps_and_expected(jira_test_key, auth):
     issue_id = jira_issue_id_from_key(jira_test_key, auth)
     project_id = jira_project_id_from_key(PROJECT_KEY, auth)
@@ -453,37 +445,73 @@ def get_zephyr_steps_and_expected(jira_test_key, auth):
     steps, expected = [], []
     for s in sorted(rows, key=lambda x: x.get("orderId", 0)):
         step_txt = (s.get("step") or "").strip()
-        exp_txt = (s.get("result") or "").strip()
+        exp_txt  = (s.get("result") or "").strip()
         if step_txt:
             steps.append(step_txt)
         if exp_txt:
             expected.append(exp_txt)
     return steps, expected
 
-
 def find_latest_execution_id(jira_test_key, auth):
+    """
+    Robustly find the latest Zephyr execution for a given Test issue.
+
+    Strategy:
+      1) Try Cloud endpoint: GET /public/rest/api/1.0/executions?issueId=&projectId=
+      2) Fallback: ZQL via GET /public/rest/api/1.0/zql/executeSearch with ORDER BY
+
+    Cloud docs (base URL & JWT per request): https://support.smartbear.com/zephyr-squad-cloud-v1/docs/en/zephyr-squad-cloud-rest-api.html
+    ZQL fields for Cloud (e.g., issue, executionStatus, cycleName): https://support.smartbear.com/zephyr-squad-cloud-v1/docs/en/execute-tests/zql-reference.html
+    """
     issue_id = jira_issue_id_from_key(jira_test_key, auth)
     project_id = jira_project_id_from_key(PROJECT_KEY, auth)
-    rel = "/public/rest/api/1.0/executions/search"
-    params = {"issueId": issue_id, "projectId": project_id, "maxRecords": 50, "offset": 0}
-    data = zephyr_get(rel, query_params=params)
-    execs = []
-    if isinstance(data, dict):
-        execs = (data.get("searchResult") or {}).get("executions") or []
-        if not execs:
-            execs = data.get("executions") or []
-    if not execs:
-        return None
-    execs_sorted = sorted(execs, key=lambda e: e.get("orderId", 0), reverse=True)
-    return str(execs_sorted[0].get("id")) if execs_sorted[0].get("id") is not None else None
 
+    # --- 1) Preferred: direct executions listing (Cloud) ---
+    try:
+        rel = "/public/rest/api/1.0/executions"
+        params = {"issueId": issue_id, "projectId": project_id, "maxRecords": 50, "offset": 0}
+        data = zephyr_get(rel, query_params=params)
+
+        execs = []
+        if isinstance(data, dict):
+            # Some tenants respond as {"executions":[...]}; others historically nested {"searchResult":{"executions":[...]}}
+            execs = (data.get("executions") or
+                     (data.get("searchResult") or {}).get("executions") or [])
+        elif isinstance(data, list):
+            execs = data
+
+        if execs:
+            execs_sorted = sorted(execs, key=lambda e: e.get("orderId", 0), reverse=True)
+            top = execs_sorted[0]
+            return str(top.get("id")) if top.get("id") is not None else None
+    except Exception:
+        # Continue to fallback if endpoint not available or empty
+        pass
+
+    # --- 2) Fallback: ZQL search (documented; flexible across tenants) ---
+    try:
+        rel = "/public/rest/api/1.0/zql/executeSearch"
+        zql = f'issue = "{jira_test_key}" ORDER BY executionDate DESC'
+        params = {"zqlQuery": zql, "maxRecords": 50, "offset": 0}
+        data = zephyr_get(rel, query_params=params)
+
+        execs = []
+        if isinstance(data, dict):
+            execs = (data.get("searchResult") or {}).get("executions") or []
+        if execs:
+            execs_sorted = sorted(execs, key=lambda e: e.get("orderId", 0), reverse=True)
+            top = execs_sorted[0]
+            return str(top.get("id")) if top.get("id") is not None else None
+    except Exception:
+        pass
+
+    return None
 
 def link_defect_to_execution(execution_id, defect_issue_key, auth):
     defect_issue_id = jira_issue_id_from_key(defect_issue_key, auth)
     rel = f"/public/rest/api/1.0/execution/{execution_id}/defects"
     body = {"issueId": defect_issue_id}
     return zephyr_post(rel, json_body=body)
-
 
 def fail_zephyr_step(execution_id, failed_step_num):
     # Fetch step results for execution (if supported)
@@ -502,16 +530,16 @@ def fail_zephyr_step(execution_id, failed_step_num):
     body = {"status": {"id": 2}}  # 2 = Fail
     zephyr_put(rel_update, json_body=body)
 
-
 def fail_execution(execution_id):
     rel = f"/public/rest/api/1.0/execution/{execution_id}"
     body = {"status": {"id": 2}}  # 2 = Fail
     zephyr_put(rel, json_body=body)
+# Enhancements:
+# - Correct mapping of Cust Tech Delivery Teams & Cust Tech Products
 
 # ============================================================
 # EPIC LINKING (Parent/Epic)
 # ============================================================
-
 def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
     story_key = test_fetch.get("linked_story_key")
     if not story_key:
@@ -567,22 +595,20 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
         if r4.status_code in (200, 204):
             return True, f"Epic Link set to {epic_key}."
         return False, f"Failed to set Epic Link: {r4.status_code} {r4.text[:300]}"
-
     return False, "Epic Link field not available on this project."
 
 # ============================================================
 # STREAMLIT UI
 # ============================================================
-
 st.set_page_config(page_title="Jira Defect Creator", layout="centered")
 st.title("🐞 Create Jira Defect from Test Ticket")
 st.markdown("**Fields marked with * are mandatory**")
 
-test_ticket = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
+test_ticket   = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
 failed_step_num = st.number_input("Failed Test Step Number *", min_value=1, value=1, step=1)
-severity = st.selectbox("Severity *", ["Sev-1", "Sev-2", "Sev-3", "Sev-4"])
-priority = st.selectbox("Priority *", ["Critical", "Major", "Medium", "Minor"])
-test_phase = st.selectbox("Test Phase *", ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"])
+severity      = st.selectbox("Severity *", ["Sev-1", "Sev-2", "Sev-3", "Sev-4"])
+priority      = st.selectbox("Priority *", ["Critical", "Major", "Medium", "Minor"])
+test_phase    = st.selectbox("Test Phase *", ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"])
 
 uploaded_files = st.file_uploader("Attach Evidence (screenshots, logs)", accept_multiple_files=True)
 
@@ -596,12 +622,14 @@ if st.button("🧠 Generate Draft (AI-lite)"):
         st.error("Enter the Test Ticket key first.")
         st.stop()
     auth = get_auth()
+
     # Background pulls
     try:
         steps_list, expected_from_zephyr = get_zephyr_steps_and_expected(test_ticket.strip(), auth)
     except Exception as e:
         steps_list, expected_from_zephyr = [], []
         st.warning(f"Zephyr fetch failed: {e}")
+
     try:
         copied = fetch_test_ticket_fields_and_text(test_ticket.strip(), auth)
     except Exception as e:
@@ -612,6 +640,7 @@ if st.button("🧠 Generate Draft (AI-lite)"):
             "linked_story_key": None
         }
         st.warning(f"Could not fetch fields/description from Test: {e}")
+
     evidence_names = [f.name for f in (uploaded_files or [])]
 
     ctx = {
@@ -634,7 +663,7 @@ if st.button("🧠 Generate Draft (AI-lite)"):
     }
     ai_out = ai_lite_draft(ctx)
     st.session_state["ai_out"] = ai_out
-    st.session_state["ctx"] = ctx
+    st.session_state["ctx"]    = ctx
     st.success("AI-lite draft generated. Review and edit below.")
 
 # Editable preview (Impact & AI notes removed)
@@ -645,12 +674,11 @@ if use_ai and "ai_out" in st.session_state:
     steps_txt = st.text_area("Steps to reproduce (one per line)", steps_txt, height=150)
     ai["steps_to_reproduce"] = [s.strip() for s in steps_txt.splitlines() if s.strip()]
     ai["expected_results"] = st.text_area("Expected Results", ai.get("expected_results", ""), height=100)
-    ai["actual_results"] = st.text_area("Actual Results", ai.get("actual_results", ""), height=100)
+    ai["actual_results"]   = st.text_area("Actual Results",   ai.get("actual_results",   ""), height=100)
 
 # ============================================================
 # HELPERS: SUMMARY, TRANSITION TO FAILED
 # ============================================================
-
 def build_defect_summary_from_test(copied):
     base = (copied.get("summary") or "").strip()
     if base and base.lower() not in ("testing", "test", "defect"):
@@ -659,7 +687,6 @@ def build_defect_summary_from_test(copied):
     if ai and ai.get("summary_suggestion"):
         return ai["summary_suggestion"]
     return "Observed issue during test execution"
-
 
 def transition_issue_to_failed(issue_key, auth):
     # Discover transition id named 'Failed' (or 'Fail') dynamically
@@ -675,7 +702,7 @@ def transition_issue_to_failed(issue_key, auth):
     transitions = (r.json() or {}).get("transitions", [])
     target = None
     for t in transitions:
-        name = (t.get("name") or "").strip().lower()
+        name   = (t.get("name") or "").strip().lower()
         to_name = (t.get("to", {}).get("name") or "").strip().lower()
         if name in ("failed", "fail") or to_name in ("failed", "fail", "fail status", "fail state", "fail"):
             target = t.get("id")
@@ -688,6 +715,7 @@ def transition_issue_to_failed(issue_key, auth):
     if not target:
         st.warning("Could not locate a 'Failed' transition for this issue.")
         return False
+
     resp = requests.post(
         f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/transitions",
         json={"transition": {"id": str(target)}},
@@ -703,7 +731,6 @@ def transition_issue_to_failed(issue_key, auth):
 # ============================================================
 # CREATE DEFECT
 # ============================================================
-
 if st.button("🚀 Create Defect"):
     if not all([test_ticket.strip(), severity, priority, test_phase]):
         st.error("Please fill all mandatory fields (*)")
@@ -802,12 +829,12 @@ if st.button("🚀 Create Defect"):
 
     create_payload = {
         "fields": {
-            "project":   {"key": PROJECT_KEY},
+            "project": {"key": PROJECT_KEY},
             "issuetype": {"id": issue_type_id},
             "summary": summary,
             "description": description_adf,
-            "priority":  {"name": priority},
-            SEVERITY_FIELD_ID:   {"id": severity_id},
+            "priority": {"name": priority},
+            SEVERITY_FIELD_ID: {"id": severity_id},
             TEST_PHASE_FIELD_ID: {"id": test_phase_id},
         }
     }
@@ -824,6 +851,7 @@ if st.button("🚀 Create Defect"):
         st.error("❌ Defect creation failed")
         st.code(create_resp.text)
         st.stop()
+
     issue_key = create_resp.json()["key"]
     st.success(f"✅ Defect created: {issue_key}")
 
@@ -831,10 +859,9 @@ if st.button("🚀 Create Defect"):
     edit_fields = {}
     if copied["labels"]:
         edit_fields["labels"] = [lbl for lbl in copied["labels"] if lbl != "JiraTestGenAI"]
-    if copied["components"]:  edit_fields["components"] = copied["components"]
+    if copied["components"]:  edit_fields["components"]  = copied["components"]
     if copied["fixVersions"]: edit_fields["fixVersions"] = copied["fixVersions"]
-    if copied["versions"]:    edit_fields["versions"] = copied["versions"]
-
+    if copied["versions"]:    edit_fields["versions"]    = copied["versions"]
     for fid, val in copied["custom"].items():
         edit_fields[fid] = val
 
@@ -881,7 +908,6 @@ if st.button("🚀 Create Defect"):
             )
             if attach_resp.status_code not in (200, 201):
                 st.warning(f"Attachment '{file.name}' failed: {attach_resp.status_code} {attach_resp.text[:200]}")
-
     st.success("📎 Attachments uploaded, fields synced & Test Ticket linked")
 
     # Transition Test ticket to Failed (dynamic lookup; falls back to id '51')
@@ -903,8 +929,11 @@ if st.button("🚀 Create Defect"):
 
             # Update failed step (best-effort; may be unsupported on some tenants)
             try:
-                fail_zephyr_step(execution_id, failed_step_num)
-                st.success("❗ Failed step updated in Zephyr.")
+                if ENABLE_STEP_UPDATE:
+                    fail_zephyr_step(execution_id, failed_step_num)
+                    st.success("❗ Failed step updated in Zephyr.")
+                else:
+                    st.info("Step update skipped (ENABLE_STEP_UPDATE = False).")
             except Exception as e:
                 st.warning(f"Could not update Zephyr failed step: {e}")
 
@@ -914,8 +943,8 @@ if st.button("🚀 Create Defect"):
                 st.success("🟥 Zephyr execution status set to FAIL.")
             except Exception as e:
                 st.warning(f"Failed to update Zephyr execution status: {e}")
-
     except Exception as e:
         st.warning(f"Zephyr operations failed: {e}")
 
     st.link_button("Open Defect in Jira", f"{JIRA_BASE_URL}/browse/{issue_key}")
+
