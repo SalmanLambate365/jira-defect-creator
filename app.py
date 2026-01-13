@@ -5,13 +5,10 @@
 # Enhancements:
 # - Correct mapping of Cust Tech Delivery Teams & Cust Tech Products
 # - Parent field set to Epic linked to the Test ticket's linked Story (best-effort)
-# - Labels copied excluding 'JiraTestGenAI'
-# - Improved defect title (uses Test summary or AI suggestion)
-# - Removed Impact & AI Notes from UI and ADF description
-# - Clearer description sections with bold highlights in steps
-# - After linking, transition Test ticket to "Failed" (dynamic transition lookup)
-# - Link defect to Zephyr execution, fail the failed step & the execution status
-# - ADF description enforced; safe link rendering; attachments upload
+#   * Find executions and extract nested execution IDs + required identifiers# - Labels copied excluding 'JiraTestGenAI'
+#   * Link defects via PUT /execution/{id}/execute with IDs (Cloud)
+#   * Fail execution via PUT /execution/{id}/execute with IDs (Cloud)
+#   * Step updates via /stepresult endpoints (feature-flagged)
 # --------------------------------------------------------------------------------
 import base64
 import hashlib
@@ -33,7 +30,7 @@ ISSUE_TYPE_CANDIDATES = ["Defect", "Bug"]
 
 # Known single-select custom field IDs in your Jira
 TEST_PHASE_FIELD_ID = "customfield_10245"  # Test Phase
-SEVERITY_FIELD_ID = "customfield_10260"    # Severity
+SEVERITY_FIELD_ID   = "customfield_10260"  # Severity
 
 # Resolve these by NAME → ID at runtime (case-insensitive)
 CUST_TECH_PORTFOLIO_NAME     = "Cust Tech Portfolio"
@@ -51,6 +48,9 @@ ZEPHYR_BASE = "https://prod-api.zephyr4jiracloud.com/connect"
 # Feature flag: some Cloud tenants don’t expose step results via API consistently.
 # Toggle to True only if your tenant supports GET/PUT of execution step results.
 ENABLE_STEP_UPDATE = True
+
+# Optional debug flag for troubleshooting API responses
+DEBUG_API = False
 
 # ============================================================
 # BASIC HELPERS (AUTH / JIRA COMMON)
@@ -435,7 +435,7 @@ def make_adf_from_ai(test_key, ai, evidence_names):
     return {"type": "doc", "version": 1, "content": content}
 
 # ============================================================
-# ZEPHYR: STEPS/EXPECTED, EXECUTION SEARCH, STEP FAIL, LINK DEFECT, FAIL EXECUTION
+# ZEPHYR: STEPS/EXPECTED, EXECUTION LOOKUP, STEP FAIL, LINK DEFECT, FAIL EXECUTION
 # ============================================================
 def get_zephyr_steps_and_expected(jira_test_key, auth):
     issue_id = jira_issue_id_from_key(jira_test_key, auth)
@@ -443,35 +443,43 @@ def get_zephyr_steps_and_expected(jira_test_key, auth):
     rel = f"/public/rest/api/1.0/teststep/{issue_id}"
     rows = zephyr_get(rel, query_params={"projectId": project_id})
     steps, expected = [], []
-    for s in sorted(rows, key=lambda x: x.get("orderId", 0)):
-        step_txt = (s.get("step") or "").strip()
-        exp_txt  = (s.get("result") or "").strip()
-        if step_txt:
-            steps.append(step_txt)
-        if exp_txt:
-            expected.append(exp_txt)
+    if isinstance(rows, list):
+        for s in sorted(rows, key=lambda x: x.get("orderId", 0)):
+            step_txt = (s.get("step") or "").strip()
+            exp_txt  = (s.get("result") or "").strip()
+            if step_txt:
+                steps.append(step_txt)
+            if exp_txt:
+                expected.append(exp_txt)
     return steps, expected
 
-
-
-def find_latest_execution_id(jira_test_key, auth):
-    issue_id = jira_issue_id_from_key(jira_test_key, auth)
+def get_latest_execution(jira_test_key, auth):
+    """
+    Return dict {id, issueId, projectId, versionId, cycleId} for the latest execution.
+    Cloud executions API responds with nested "execution" objects.
+    """
+    issue_id   = jira_issue_id_from_key(jira_test_key, auth)
     project_id = jira_project_id_from_key(PROJECT_KEY, auth)
 
+    # Try direct listing
     try:
         rel = "/public/rest/api/1.0/executions"
         params = {"issueId": issue_id, "projectId": project_id, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
-        st.write("DEBUG: Executions API response:", data)  # Debug log
-
-        execs = data.get("executions") or []
+        if DEBUG_API: st.write("DEBUG: Executions API response:", data)
+        execs = (data or {}).get("executions") or []
         if execs:
-            # Extract execution IDs from nested structure
-            exec_ids = [e.get("execution", {}).get("id") for e in execs if e.get("execution")]
-            if exec_ids:
-                return exec_ids[0]  # Return the first (latest) execution ID
+            e = execs[0].get("execution") or {}
+            if e.get("id"):
+                return {
+                    "id":        e.get("id"),
+                    "issueId":   e.get("issueId"),
+                    "projectId": e.get("projectId"),
+                    "versionId": e.get("versionId"),
+                    "cycleId":   e.get("cycleId"),
+                }
     except Exception as e:
-        st.warning(f"Executions API failed: {e}")
+        if DEBUG_API: st.warning(f"Executions API failed: {e}")
 
     # Fallback: ZQL search
     try:
@@ -479,46 +487,79 @@ def find_latest_execution_id(jira_test_key, auth):
         zql = f'issue = "{jira_test_key}" ORDER BY executionDate DESC'
         params = {"zqlQuery": zql, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
-        st.write("DEBUG: ZQL API response:", data)
-
-        execs = (data.get("searchResult") or {}).get("executions") or []
+        if DEBUG_API: st.write("DEBUG: ZQL API response:", data)
+        execs = ((data or {}).get("searchResult") or {}).get("executions") or []
         if execs:
-            exec_ids = [e.get("execution", {}).get("id") for e in execs if e.get("execution")]
-            if exec_ids:
-                return exec_ids[0]
+            e = execs[0].get("execution") or {}
+            if e.get("id"):
+                return {
+                    "id":        e.get("id"),
+                    "issueId":   e.get("issueId"),
+                    "projectId": e.get("projectId"),
+                    "versionId": e.get("versionId"),
+                    "cycleId":   e.get("cycleId"),
+                }
     except Exception as e:
-        st.warning(f"ZQL API failed: {e}")
+        if DEBUG_API: st.warning(f"ZQL API failed: {e}")
 
     return None
 
-
-
-def link_defect_to_execution(execution_id, defect_issue_key, auth):
-    defect_issue_id = jira_issue_id_from_key(defect_issue_key, auth)
-    rel = f"/public/rest/api/1.0/execution/{execution_id}/defects"
-    body = {"issueId": defect_issue_id}
-    return zephyr_post(rel, json_body=body)
+def link_defect_to_execution(exec_obj, defect_issue_key):
+    """
+    Cloud: link a defect to execution via /execution/{id}/execute
+    Must include issueId, projectId, versionId, cycleId.
+    """
+    rel = f"/public/rest/api/1.0/execution/{exec_obj['id']}/execute"
+    body = {
+        "issueId":   exec_obj["issueId"],
+        "projectId": exec_obj["projectId"],
+        "versionId": exec_obj["versionId"],
+        "cycleId":   exec_obj["cycleId"],
+        # Include both to satisfy older payload variants
+        "defects": [defect_issue_key],
+        "defectList": [defect_issue_key],
+        "updateDefectList": "true"
+    }
+    return zephyr_put(rel, json_body=body)
 
 def fail_zephyr_step(execution_id, failed_step_num):
-    # Fetch step results for execution (if supported)
-    rel_steps = f"/public/rest/api/1.0/execution/{execution_id}/steps"
-    steps = zephyr_get(rel_steps)
-    if not isinstance(steps, list) or not steps:
+    """
+    Cloud: step results via /stepresult (list by executionId) and /stepresult/{id} (update).
+    """
+    # 1) fetch step results
+    rel_list = "/public/rest/api/1.0/stepresult"
+    data = zephyr_get(rel_list, query_params={"executionId": execution_id})
+    if DEBUG_API: st.write("DEBUG: Step Results list:", data)
+
+    if not isinstance(data, list) or not data:
         raise RuntimeError("No step results returned for this execution.")
-    steps_sorted = sorted(steps, key=lambda x: x.get("orderId", 0))
+
+    steps_sorted = sorted(data, key=lambda x: x.get("orderId", 0))
     idx = max(1, int(failed_step_num)) - 1
     if idx >= len(steps_sorted):
         idx = len(steps_sorted) - 1
-    step_result_id = steps_sorted[idx].get("id") or steps_sorted[idx].get("stepResultId")
+
+    step_result_id = steps_sorted[idx].get("id")
     if not step_result_id:
         raise RuntimeError("Couldn't resolve stepResultId from Zephyr response.")
-    rel_update = f"/public/rest/api/1.0/execution/{execution_id}/stepResult/{step_result_id}"
+
+    # 2) update chosen step
+    rel_update = f"/public/rest/api/1.0/stepresult/{step_result_id}"
     body = {"status": {"id": 2}}  # 2 = Fail
     zephyr_put(rel_update, json_body=body)
 
-def fail_execution(execution_id):
-    rel = f"/public/rest/api/1.0/execution/{execution_id}"
-    body = {"status": {"id": 2}}  # 2 = Fail
+def fail_execution(exec_obj):
+    """
+    Cloud: set execution status via /execution/{id}/execute with status + IDs.
+    """
+    rel = f"/public/rest/api/1.0/execution/{exec_obj['id']}/execute"
+    body = {
+        "issueId":   exec_obj["issueId"],
+        "projectId": exec_obj["projectId"],
+        "versionId": exec_obj["versionId"],
+        "cycleId":   exec_obj["cycleId"],
+        "status": {"id": 2}  # 2 = FAIL
+    }
     zephyr_put(rel, json_body=body)
 
 # ============================================================
@@ -585,7 +626,7 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
 # STREAMLIT UI
 # ============================================================
 st.set_page_config(page_title="Jira Defect Creator", layout="centered")
-st.title("🐞 AutoDefect Loggerr")
+st.title("🐞 AutoDefect Logger")
 st.markdown("**Fields marked with * are mandatory**")
 
 test_ticket     = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
@@ -806,10 +847,8 @@ if st.button("🚀 Create Defect"):
     else:
         description_adf = {
             "type": "doc", "version": 1,
-            "content": [
-                adf_heading("Issue Description"),
-                adf_paragraph(copied["text"]["issue_description"] or f"Related Test Ticket: {test_ticket.strip()}")
-            ]
+            "content": [adf_heading("Issue Description"),
+                        adf_paragraph(copied["text"]["issue_description"] or f"Related Test Ticket: {test_ticket.strip()}")]
         }
 
     # Create payload — ensure description is ADF; use option ids if available, else label values
@@ -910,12 +949,13 @@ if st.button("🚀 Create Defect"):
 
     # Zephyr: link defect to latest execution, fail the failed step & execution
     try:
-        execution_id = find_latest_execution_id(test_ticket.strip(), auth)
-        if not execution_id:
+        exec_obj = get_latest_execution(test_ticket.strip(), auth)
+        if not exec_obj:
             st.warning("No Zephyr execution found for this Test.")
         else:
+            # Link defect (Cloud via /execute with IDs)
             try:
-                link_defect_to_execution(execution_id, issue_key, auth)
+                link_defect_to_execution(exec_obj, issue_key)
                 st.success("🔗 Defect linked to Zephyr execution (Defects section).")
             except Exception as e:
                 st.warning(f"Failed to link defect to Zephyr execution: {e}")
@@ -923,16 +963,16 @@ if st.button("🚀 Create Defect"):
             # Update failed step (best-effort; may be unsupported on some tenants)
             try:
                 if ENABLE_STEP_UPDATE:
-                    fail_zephyr_step(execution_id, failed_step_num)
+                    fail_zephyr_step(exec_obj["id"], failed_step_num)
                     st.success("❗ Failed step updated in Zephyr.")
                 else:
                     st.info("Step update skipped (ENABLE_STEP_UPDATE = False).")
             except Exception as e:
                 st.warning(f"Could not update Zephyr failed step: {e}")
 
-            # Fail the overall execution
+            # Fail the overall execution (Cloud via /execute with IDs)
             try:
-                fail_execution(execution_id)
+                fail_execution(exec_obj)
                 st.success("🟥 Zephyr execution status set to FAIL.")
             except Exception as e:
                 st.warning(f"Failed to update Zephyr execution status: {e}")
@@ -945,3 +985,9 @@ if st.button("🚀 Create Defect"):
         st.link_button("Open Defect in Jira", f"{JIRA_BASE_URL}/browse/{ik}")
     else:
         st.info("Create a defect first to enable the Jira link.")
+# - Improved defect title (uses Test summary or AI suggestion)
+# - Removed Impact & AI Notes from UI and ADF description
+# - Clearer description sections with bold highlights in steps
+# - After linking, transition Test ticket to "Failed" (dynamic transition lookup)
+# - ADF description enforced; safe link rendering; attachments upload
+# - Zephyr Cloud fixes:
