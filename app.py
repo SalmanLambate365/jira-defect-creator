@@ -3,7 +3,7 @@
 # --------------------------------------------------------------------------------
 # Jira Defect Creator (Create defect from Test; copy fields; Zephyr integration)
 # Enhancements:
-# - Correct mapping of Cust Tech Delivery Team & Cust Tech Product
+# - Correct mapping of Cust Tech Delivery Teams & Cust Tech Products
 # - Parent field set to Epic linked to the Test ticket's linked Story (best-effort)
 # - Labels copied excluding 'JiraTestGenAI'
 # - Improved defect title (uses Test summary or AI suggestion)
@@ -37,8 +37,8 @@ SEVERITY_FIELD_ID = "customfield_10260"    # Severity
 
 # Resolve these by NAME → ID at runtime (case-insensitive)
 CUST_TECH_PORTFOLIO_NAME     = "Cust Tech Portfolio"
-CUST_TECH_PRODUCT_NAME       = "Cust Tech Product"
-CUST_TECH_DELIVERY_TEAM_NAME = "Cust Tech Delivery Team"
+CUST_TECH_PRODUCT_NAME       = "Cust Tech Products"
+CUST_TECH_DELIVERY_TEAM_NAME = "Cust Tech Delivery Teams"
 
 # Names for description sections pulled from the Test ticket
 EXPECTED_RESULTS_NAME = "Expected Results"
