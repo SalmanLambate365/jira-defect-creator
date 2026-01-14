@@ -332,7 +332,7 @@ def add_titlebar_branding(
     if Path(header_image_path).exists():
 
 st_html(html_blob, height=140, scrolling=False)
-):
+
 + /* Prevent any accidental clipping of the logo at the edges */
 
     """
