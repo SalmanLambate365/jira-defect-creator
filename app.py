@@ -672,16 +672,32 @@ def fail_zephyr_step(*args, **kwargs):
     # Step-result endpoints are not consistently exposed on Squad Cloud tenants.
     raise RuntimeError("Step update disabled for this tenant. Set ENABLE_STEP_UPDATE=True only if supported.")
 
+
 def fail_execution_cloud(execution_obj):
     """
-    Zephyr Cloud: set execution status via /execution/{id}/execute.
+    Zephyr Squad Cloud: set execution status using the bulk update endpoint.
+    Using /public/rest/api/1.0/executions (POST) with one execution id is the
+    Cloud-supported way. Status id: 2 = FAIL.
     """
     execution_id = execution_obj.get("id")
     if not execution_id:
         raise RuntimeError("Missing execution id.")
-    rel = f"/public/rest/api/1.0/execution/{execution_id}/execute"
-    body = {"status": {"id": 2}}  # 2 = Fail
-    zephyr_put(rel, json_body=body)
+
+    # Cloud bulk update endpoint (works for one or many executions)
+    rel = "/public/rest/api/1.0/executions"
+
+    # Minimal payload: just ids + status. Flags are optional; keep simple first.
+    body = {
+        "executions": [str(execution_id)],  # list of execution ids as strings
+        "status": 2                         # 2 = FAIL
+        # Optional flags if you ever need them:
+        # "clearDefectMappingFlag": False,
+        # "testStepStatusChangeFlag": False,
+        # "stepStatus": -1
+    }
+
+    zephyr_post(rel, json_body=body)
+
 
 # ============================================================
 # EPIC LINKING (Parent/Epic)
