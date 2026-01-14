@@ -117,6 +117,55 @@ def _pick_brand_colors(img: Image.Image):
 
     return _rgb_to_hex(green_best), _rgb_to_hex(teal_best)
 
+
+from streamlit.components.v1 import html as st_html
+import base64, io
+from pathlib import Path
+from PIL import Image
+import colorsys
+
+def _rgb_to_hex(rgb):
+    r, g, b = rgb
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+def _dominant_palette(img: Image.Image, k: int = 8):
+    small = img.copy().convert("RGBA").resize((160, 160))
+    pixels = [px for px in small.getdata() if px[3] > 0]
+    if not pixels:
+        return [((22, 163, 74), 1)]
+    pal_img = small.convert("P", palette=Image.ADAPTIVE, colors=k)
+    palette = pal_img.getpalette()[:k * 3]
+    color_counts = pal_img.getcolors() or []
+    def idx_to_rgb(i):
+        base = i * 3
+        return (palette[base], palette[base+1], palette[base+2])
+    colors = [(idx_to_rgb(i), c) for (c, i) in color_counts]
+    colors.sort(key=lambda x: x[1], reverse=True)
+    return colors
+
+def _pick_brand_colors(img: Image.Image):
+    def to_hsv(rgb):
+        r, g, b = [v/255 for v in rgb]
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        return (h*360.0, s, v)
+    colors = _dominant_palette(img, k=8)
+    def green_score(rgb, count):
+        h, s, v = to_hsv(rgb)
+        return (s*0.8 + v*0.2) * max(0.0, 1.0 - abs(h - 140)/60.0) * (1 + count/1000.0)
+    def teal_score(rgb, count):
+        h, s, v = to_hsv(rgb)
+        return (s*0.6 + (1 - v)*0.6) * max(0.0, 1.0 - abs(h - 180)/70.0) * (1 + count/1000.0)
+    green_best, gs_best = None, -1
+    teal_best, ts_best   = None, -1
+    for rgb, cnt in colors:
+        gs = green_score(rgb, cnt)
+        ts = teal_score(rgb, cnt)
+        if gs > gs_best: green_best, gs_best = rgb, gs
+        if ts > ts_best: teal_best, ts_best = rgb, ts
+    if not green_best: green_best = (22, 163, 74)  # #16A34A
+    if not teal_best:  teal_best  = (5, 68, 74)
+    return _rgb_to_hex(green_best), _rgb_to_hex(teal_best)
+
 def add_titlebar_branding(
     header_image_path: str,
     app_title: str = "🐞 AutoDefect Logger",
@@ -129,9 +178,8 @@ def add_titlebar_branding(
     max_inner_width_px: int = 1200
 ):
     """
-    Renders a title bar with teal background (title + logo in separate containers),
-    a green divider below, and a fixed footer. Uses components.html to avoid
-    Markdown/fence issues, and ensures the base64 logo never prints as text.
+    Renders title bar + green divider inside an iframe and injects the footer
+    outside the iframe so it stays fixed to the page bottom.
     """
     logo_data_url = ""
     if Path(header_image_path).exists():
@@ -146,7 +194,7 @@ def add_titlebar_branding(
     else:
         brand_green = brand_green_hex or "#16A34A"
         brand_teal  = brand_teal_hex  or "#0f5b5f"
-        logo_data_url = ""  # no logo available
+        logo_data_url = ""
 
     title_html = f"""
       <div class="mg-title">
@@ -155,7 +203,6 @@ def add_titlebar_branding(
       </div>
     """
 
-    # Left/Right fixed containers to keep layout solid
     if logo_side.lower() == "left":
         left_html  = f"<div class='mg-logo-wrap'>{f'<img class=\"mg-logo\" src=\"{logo_data_url}\" alt=\"M&G Logo\" />' if logo_data_url else ''}</div>"
         right_html = f"<div class='mg-title-wrap'>{title_html}</div>"
@@ -163,15 +210,14 @@ def add_titlebar_branding(
         left_html  = f"<div class='mg-title-wrap'>{title_html}</div>"
         right_html = f"<div class='mg-logo-wrap'>{f'<img class=\"mg-logo\" src=\"{logo_data_url}\" alt=\"M&G Logo\" />' if logo_data_url else ''}</div>"
 
+    # ---- TOP BAR + DIVIDER in iframe ----
     html_blob = f"""
       <style>
         :root {{
           --brand-green: {brand_green};
           --brand-teal:  {brand_teal};
-          --footer-fg:   #334155;
           --title-fg:    #ffffff;
           --subtitle-fg: #e2e8f0;
-          --surface:     #ffffff;
         }}
         .mg-topbar-wrap {{
           width: 100%;
@@ -188,8 +234,7 @@ def add_titlebar_branding(
           margin: 0 auto;
           padding: 10px 14px;
         }}
-        .mg-title-wrap {{ display:flex; align-items:center; }}
-        .mg-logo-wrap  {{ display:flex; align-items:center; }}
+        .mg-title-wrap, .mg-logo-wrap {{ display:flex; align-items:center; }}
         .mg-title {{ display:flex; flex-direction:column; gap:2px; }}
         .mg-title-line {{
           color: var(--title-fg);
@@ -215,17 +260,7 @@ def add_titlebar_branding(
           background-color: var(--brand-green);
           border: none;
           margin: 0.25rem auto 1.25rem auto;
-          max-width: {max_inner_width_px}px; /* align with inner width */
-        }}
-        .footer {{
-          position: fixed; left: 0; right: 0; bottom: 0; width: 100%;
-          background: var(--surface); border-top: 4px solid var(--brand-green);
-          padding: 8px 16px; font-size: 0.9rem; color: var(--footer-fg); z-index: 9999;
-        }}
-        .block-container {{ padding-top: 1rem; padding-bottom: 6rem; }}
-        @media (max-width: 480px) {{
-          .mg-title-line {{ font-size: 1.05rem; }}
-          .mg-subtitle   {{ font-size: 0.85rem; }}
+          max-width: {max_inner_width_px}px;
         }}
       </style>
 
@@ -236,13 +271,29 @@ def add_titlebar_branding(
         </div>
       </div>
       <div class="green-line"></div>
-      <div class="footer">{footer_text}</div>
     """
+    st_html(html_blob, height=120, scrolling=False)
 
-    # Render via components.html so HTML/CSS isn't escaped
-    st_html(html_blob, height=150, scrolling=False)
-    # Spacer to avoid overlap with fixed footer
-    st.markdown("<div style='height: 64px'></div>", unsafe_allow_html=True)
+    # ---- FOOTER in main page DOM (fixed to viewport bottom) ----
+    st.markdown(f"""
+        <style>
+            .footer-fixed {{
+                position: fixed;
+                left: 0; right: 0; bottom: 0;
+                width: 100%;
+                background: #ffffff;
+                border-top: 4px solid {brand_green};
+                padding: 8px 16px;
+                font-size: 0.9rem;
+                color: #334155;
+                z-index: 9999;
+            }}
+            .block-container {{ padding-bottom: 80px; }}
+        </style>
+        <div class="footer-fixed">{footer_text}</div>
+    """, unsafe_allow_html=True)
+``
+
 
 # ============================================================
 # BASIC HELPERS (AUTH / JIRA COMMON)
