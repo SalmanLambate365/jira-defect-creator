@@ -5,10 +5,13 @@
 # Enhancements:
 # - Correct mapping of Cust Tech Delivery Teams & Cust Tech Products
 # - Parent field set to Epic linked to the Test ticket's linked Story (best-effort)
-#   * Find executions and extract nested execution IDs + required identifiers# - Labels copied excluding 'JiraTestGenAI'
-#   * Link defects via PUT /execution/{id}/execute with IDs (Cloud)
-#   * Fail execution via PUT /execution/{id}/execute with IDs (Cloud)
-#   * Step updates via /stepresult endpoints (feature-flagged)
+# - Labels copied excluding 'JiraTestGenAI'
+# - Improved defect title (uses Test summary or AI suggestion)
+# - Removed Impact & AI Notes from UI and ADF description
+# - Clearer description sections with bold highlights in steps
+# - After linking, transition Test ticket to "Failed" (dynamic transition lookup)
+# - Link defect to Zephyr execution, fail the failed step & the execution status
+# - ADF description enforced; safe link rendering; attachments upload
 # --------------------------------------------------------------------------------
 import base64
 import hashlib
@@ -17,6 +20,11 @@ import json
 import time
 import urllib.parse
 import re
+import io
+import colorsys
+from pathlib import Path
+from PIL import Image
+
 import streamlit as st
 import requests
 from requests.auth import HTTPBasicAuth
@@ -33,8 +41,8 @@ TEST_PHASE_FIELD_ID = "customfield_10245"  # Test Phase
 SEVERITY_FIELD_ID   = "customfield_10260"  # Severity
 
 # Resolve these by NAME → ID at runtime (case-insensitive)
-CUST_TECH_PORTFOLIO_NAME     = "Cust Tech Portfolio"
-CUST_TECH_PRODUCT_NAME       = "Cust Tech Products"
+CUST_TECH_PORTFOLIO_NAME   = "Cust Tech Portfolio"
+CUST_TECH_PRODUCT_NAME     = "Cust Tech Products"
 CUST_TECH_DELIVERY_TEAM_NAME = "Cust Tech Delivery Teams"
 
 # Names for description sections pulled from the Test ticket
@@ -49,8 +57,218 @@ ZEPHYR_BASE = "https://prod-api.zephyr4jiracloud.com/connect"
 # Toggle to True only if your tenant supports GET/PUT of execution step results.
 ENABLE_STEP_UPDATE = True
 
-# Optional debug flag for troubleshooting API responses
-DEBUG_API = False
+# ============================================================
+# BRANDING: Title bar (logo + title), green divider, fixed footer
+# ============================================================
+def _rgb_to_hex(rgb):
+    r, g, b = rgb
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+def _dominant_palette(img: Image.Image, k: int = 8):
+    """
+    Returns a list of ((R,G,B), count) sorted by count desc using adaptive palette.
+    """
+    small = img.copy().convert("RGBA").resize((160, 160))
+    pixels = [px for px in small.getdata() if px[3] > 0]
+    if not pixels:
+        return [((22, 163, 74), 1)]  # fallback green (Tailwind emerald-600)
+
+    pal_img = small.convert("P", palette=Image.ADAPTIVE, colors=k)
+    palette = pal_img.getpalette()[:k * 3]
+    color_counts = pal_img.getcolors() or []
+
+    def idx_to_rgb(i):
+        base = i * 3
+        return (palette[base], palette[base + 1], palette[base + 2])
+
+    colors = [(idx_to_rgb(i), c) for (c, i) in color_counts]
+    colors.sort(key=lambda x: x[1], reverse=True)
+    return colors
+
+def _pick_brand_colors(img: Image.Image):
+    """
+    Heuristically pick:
+      - brand_green: saturated green (for divider & footer border)
+      - brand_teal : darker teal/blue-green (for top bar background)
+    Fallbacks used if not found.
+    """
+    colors = _dominant_palette(img, k=8)
+
+    def to_hsv(rgb):
+        r, g, b = [v/255 for v in rgb]
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        return (h * 360.0, s, v)
+
+    def green_score(rgb, count):
+        h, s, v = to_hsv(rgb)
+        hue_bias = max(0.0, 1.0 - abs(h - 140) / 60.0)  # favor ~140°
+        return (s * 0.8 + v * 0.2) * hue_bias * (1 + count/1000.0)
+
+    def teal_score(rgb, count):
+        h, s, v = to_hsv(rgb)
+        hue_bias = max(0.0, 1.0 - abs(h - 180) / 70.0)  # favor ~180°
+        return (s * 0.6 + (1 - v) * 0.6) * hue_bias * (1 + count/1000.0)
+
+    green_best, green_best_score = None, -1
+    teal_best, teal_best_score   = None, -1
+    for rgb, cnt in colors:
+        gs = green_score(rgb, cnt)
+        if gs > green_best_score:
+            green_best, green_best_score = rgb, gs
+        ts = teal_score(rgb, cnt)
+        if ts > teal_best_score:
+            teal_best, teal_best_score = rgb, ts
+
+    if not green_best:
+        green_best = (22, 163, 74)   # #16A34A
+    if not teal_best:
+        teal_best = (5, 68, 74)      # dark teal fallback
+
+    return _rgb_to_hex(green_best), _rgb_to_hex(teal_best)
+
+def add_titlebar_branding(
+    header_image_path,
+    app_title="🐞 AutoDefect Logger",
+    app_subtitle="Jira Defect Creator",
+    footer_text="AutoDefect Logger • © 2026",
+    brand_green_hex=None,
+    brand_teal_hex=None,
+    logo_height_px=48,       # height of the logo/banner image in the bar
+    logo_side="right",       # "right" or "left"
+    max_inner_width_px=1200  # inner width limit for tidy look on ultrawide
+):
+    """
+    Renders a title bar with teal background and side-by-side title + logo,
+    then a green divider line, and a fixed footer with a green top border.
+    """
+    img_tag = ""
+    if Path(header_image_path).exists():
+        img = Image.open(header_image_path).convert("RGB")
+        auto_green, auto_teal = _pick_brand_colors(img)
+        brand_green = brand_green_hex or auto_green
+        brand_teal  = brand_teal_hex  or auto_teal
+
+        # encode image to base64 for clean placement via HTML
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        img_tag = f"data:image/png;base64,{b64}"
+    else:
+        brand_green = brand_green_hex or "#16A34A"
+        brand_teal  = brand_teal_hex  or "#0f5b5f"
+
+    title_html = f"""
+        <div class="mg-title">
+            <div class="mg-title-line">{app_title}</div>
+            {f"<div class='mg-subtitle'>{app_subtitle}</div>" if app_subtitle else ""}
+        </div>
+    """
+    inner = f"{img_tag}{title_html}" if logo_side.lower() == "left" else f"{title_html}{img_tag}"
+
+    st.markdown(f"""
+        <style>
+            :root {{
+                --brand-green: {brand_green};
+                --brand-teal:  {brand_teal};
+                --footer-fg:   #334155;   /* slate-ish */
+                --title-fg:    #ffffff;   /* white */
+                --subtitle-fg: #e2e8f0;   /* light slate */
+                --surface:     #ffffff;
+            }}
+
+            /* Top bar wrapper */
+            .mg-topbar-wrap {{
+                width: 100%;
+                background-color: var(--brand-teal);
+                margin: 0;
+                padding: 0;
+            }}
+
+            /* Inner bar: side-by-side */
+            .mg-topbar {{
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                max-width: {max_inner_width_px}px;
+                margin: 0 auto;
+                padding: 10px 14px;
+            }}
+
+            .mg-title {{
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+            }}
+
+            .mg-title-line {{
+                color: var(--title-fg);
+                font-weight: 700;
+                font-size: 1.25rem;  /* ~20px */
+                line-height: 1.2;
+                letter-spacing: 0.2px;
+            }}
+
+            .mg-subtitle {{
+                color: var(--subtitle-fg);
+                font-weight: 500;
+                font-size: 0.95rem;
+                line-height: 1.2;
+            }}
+
+            .mg-logo {{
+                height: {logo_height_px}px;
+                width: auto;
+                display: block;
+                border-radius: 6px;
+                box-shadow: none;
+            }}
+
+            /* Divider line under the bar */
+            .green-line {{
+                height: 4px;
+                background-color: var(--brand-green);
+                border: none;
+                margin: 0.25rem 0 1.25rem 0;
+            }}
+
+            /* Fixed footer */
+            .footer {{
+                position: fixed;
+                left: 0; right: 0; bottom: 0;
+                width: 100%;
+                background: var(--surface);
+                border-top: 4px solid var(--brand-green);
+                padding: 8px 16px;
+                font-size: 0.9rem;
+                color: var(--footer-fg);
+                z-index: 9999;
+            }}
+
+            /* Adjust Streamlit default paddings; add room for fixed footer */
+            .block-container {{
+                padding-top: 1rem;
+                padding-bottom: 6rem;
+            }}
+
+            /* Responsive tweaks */
+            @media (max-width: 480px) {{
+                .mg-title-line {{ font-size: 1.05rem; }}
+                .mg-subtitle   {{ font-size: 0.85rem; }}
+            }}
+        </style>
+
+        <div class="mg-topbar-wrap">
+          <div class="mg-topbar">
+            {inner}
+          </div>
+        </div>
+        <div class="green-line"></div>
+        <div class="footer">{footer_text}</div>
+    """, unsafe_allow_html=True)
+
+    # Spacer so bottom widgets aren't hidden behind fixed footer
+    st.markdown("<div style='height: 64px'></div>", unsafe_allow_html=True)
 
 # ============================================================
 # BASIC HELPERS (AUTH / JIRA COMMON)
@@ -79,7 +297,6 @@ def jira_project_id_from_key(project_key, auth):
 
 # -- Field ID cache & resolver --
 _FIELD_ID_CACHE = {}
-
 def get_field_id_by_name(field_name, auth):
     """
     Resolve Jira field ID by display name (case-insensitive).
@@ -123,12 +340,10 @@ def build_zephyr_jwt(method, relative_path, query_params=None, expires_in=360):
         "iat": now
     }
     header = {"typ": "JWT", "alg": "HS256"}
-
     def b64(obj):
         return base64.urlsafe_b64encode(
             json.dumps(obj, separators=(",", ":")).encode()
         ).rstrip(b"=")
-
     signing_input = b".".join([b64(header), b64(payload)])
     signature = base64.urlsafe_b64encode(
         hmac.new(st.secrets["ZEPHYR_SECRET_KEY"].encode(), signing_input, hashlib.sha256).digest()
@@ -181,7 +396,7 @@ def fetch_test_ticket_fields_and_text(test_key, auth):
     actual_id    = get_field_id_by_name(ACTUAL_RESULTS_NAME, auth)
     impact_id    = get_field_id_by_name(IMPACT_NAME, auth)
 
-    standard   = ["summary", "labels", "components", "fixVersions", "versions", "description", "issuelinks"]
+    standard = ["summary", "labels", "components", "fixVersions", "versions", "description", "issuelinks"]
     custom_ids = [fid for fid in [portfolio_id, product_id, team_id, expected_id, actual_id, impact_id] if fid]
     fields_param = ",".join(standard + custom_ids)
 
@@ -281,13 +496,17 @@ def adf_heading(text, level=2):
 
 def adf_bullet_list(items):
     if not items: return []
-    return [{"type": "bulletList",
-             "content": [{"type": "listItem","content":[adf_paragraph(i)]} for i in items]}]
+    return [{
+        "type": "bulletList",
+        "content": [{"type":"listItem","content":[adf_paragraph(i)]} for i in items]
+    }]
 
 def adf_ordered_list(items):
     if not items: return []
-    return [{"type": "orderedList",
-             "content": [{"type": "listItem","content":[adf_paragraph(i)]} for i in items]}]
+    return [{
+        "type": "orderedList",
+        "content": [{"type":"listItem","content":[adf_paragraph(i)]} for i in items]
+    }]
 
 # --- ADF helpers (inline strong) ---
 def adf_strong_text(text: str):
@@ -402,7 +621,6 @@ def ai_lite_draft(context):
 
 def make_adf_from_ai(test_key, ai, evidence_names):
     content = []
-
     # Issue Description
     content.append(adf_heading("Issue Description"))
     desc_txt = (ai.get("issue_description") or f"Related Test Ticket: {test_key}").strip()
@@ -435,7 +653,7 @@ def make_adf_from_ai(test_key, ai, evidence_names):
     return {"type": "doc", "version": 1, "content": content}
 
 # ============================================================
-# ZEPHYR: STEPS/EXPECTED, EXECUTION LOOKUP, STEP FAIL, LINK DEFECT, FAIL EXECUTION
+# ZEPHYR: STEPS/EXPECTED, EXECUTION SEARCH, STEP FAIL, LINK DEFECT, FAIL EXECUTION
 # ============================================================
 def get_zephyr_steps_and_expected(jira_test_key, auth):
     issue_id = jira_issue_id_from_key(jira_test_key, auth)
@@ -443,123 +661,72 @@ def get_zephyr_steps_and_expected(jira_test_key, auth):
     rel = f"/public/rest/api/1.0/teststep/{issue_id}"
     rows = zephyr_get(rel, query_params={"projectId": project_id})
     steps, expected = [], []
-    if isinstance(rows, list):
-        for s in sorted(rows, key=lambda x: x.get("orderId", 0)):
-            step_txt = (s.get("step") or "").strip()
-            exp_txt  = (s.get("result") or "").strip()
-            if step_txt:
-                steps.append(step_txt)
-            if exp_txt:
-                expected.append(exp_txt)
+    for s in sorted(rows, key=lambda x: x.get("orderId", 0)):
+        step_txt = (s.get("step") or "").strip()
+        exp_txt  = (s.get("result") or "").strip()
+        if step_txt:
+            steps.append(step_txt)
+        if exp_txt:
+            expected.append(exp_txt)
     return steps, expected
 
-def get_latest_execution(jira_test_key, auth):
-    """
-    Return dict {id, issueId, projectId, versionId, cycleId} for the latest execution.
-    Cloud executions API responds with nested "execution" objects.
-    """
-    issue_id   = jira_issue_id_from_key(jira_test_key, auth)
+def find_latest_execution_id(jira_test_key, auth):
+    issue_id = jira_issue_id_from_key(jira_test_key, auth)
     project_id = jira_project_id_from_key(PROJECT_KEY, auth)
-
-    # Try direct listing
     try:
         rel = "/public/rest/api/1.0/executions"
         params = {"issueId": issue_id, "projectId": project_id, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
-        if DEBUG_API: st.write("DEBUG: Executions API response:", data)
-        execs = (data or {}).get("executions") or []
+        st.write("DEBUG: Executions API response:", data)  # Debug log
+        execs = data.get("executions") or []
         if execs:
-            e = execs[0].get("execution") or {}
-            if e.get("id"):
-                return {
-                    "id":        e.get("id"),
-                    "issueId":   e.get("issueId"),
-                    "projectId": e.get("projectId"),
-                    "versionId": e.get("versionId"),
-                    "cycleId":   e.get("cycleId"),
-                }
+            exec_ids = [e.get("execution", {}).get("id") for e in execs if e.get("execution")]
+            if exec_ids:
+                return exec_ids[0]  # latest
     except Exception as e:
-        if DEBUG_API: st.warning(f"Executions API failed: {e}")
-
+        st.warning(f"Executions API failed: {e}")
     # Fallback: ZQL search
     try:
         rel = "/public/rest/api/1.0/zql/executeSearch"
         zql = f'issue = "{jira_test_key}" ORDER BY executionDate DESC'
         params = {"zqlQuery": zql, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
-        if DEBUG_API: st.write("DEBUG: ZQL API response:", data)
-        execs = ((data or {}).get("searchResult") or {}).get("executions") or []
+        st.write("DEBUG: ZQL API response:", data)
+        execs = (data.get("searchResult") or {}).get("executions") or []
         if execs:
-            e = execs[0].get("execution") or {}
-            if e.get("id"):
-                return {
-                    "id":        e.get("id"),
-                    "issueId":   e.get("issueId"),
-                    "projectId": e.get("projectId"),
-                    "versionId": e.get("versionId"),
-                    "cycleId":   e.get("cycleId"),
-                }
+            exec_ids = [e.get("execution", {}).get("id") for e in execs if e.get("execution")]
+            if exec_ids:
+                return exec_ids[0]
     except Exception as e:
-        if DEBUG_API: st.warning(f"ZQL API failed: {e}")
-
+        st.warning(f"ZQL API failed: {e}")
     return None
 
-def link_defect_to_execution(exec_obj, defect_issue_key):
-    """
-    Cloud: link a defect to execution via /execution/{id}/execute
-    Must include issueId, projectId, versionId, cycleId.
-    """
-    rel = f"/public/rest/api/1.0/execution/{exec_obj['id']}/execute"
-    body = {
-        "issueId":   exec_obj["issueId"],
-        "projectId": exec_obj["projectId"],
-        "versionId": exec_obj["versionId"],
-        "cycleId":   exec_obj["cycleId"],
-        # Include both to satisfy older payload variants
-        "defects": [defect_issue_key],
-        "defectList": [defect_issue_key],
-        "updateDefectList": "true"
-    }
-    return zephyr_put(rel, json_body=body)
+def link_defect_to_execution(execution_id, defect_issue_key, auth):
+    defect_issue_id = jira_issue_id_from_key(defect_issue_key, auth)
+    rel = f"/public/rest/api/1.0/execution/{execution_id}/defects"
+    body = {"issueId": defect_issue_id}
+    return zephyr_post(rel, json_body=body)
 
 def fail_zephyr_step(execution_id, failed_step_num):
-    """
-    Cloud: step results via /stepresult (list by executionId) and /stepresult/{id} (update).
-    """
-    # 1) fetch step results
-    rel_list = "/public/rest/api/1.0/stepresult"
-    data = zephyr_get(rel_list, query_params={"executionId": execution_id})
-    if DEBUG_API: st.write("DEBUG: Step Results list:", data)
-
-    if not isinstance(data, list) or not data:
+    # Fetch step results for execution (if supported)
+    rel_steps = f"/public/rest/api/1.0/execution/{execution_id}/steps"
+    steps = zephyr_get(rel_steps)
+    if not isinstance(steps, list) or not steps:
         raise RuntimeError("No step results returned for this execution.")
-
-    steps_sorted = sorted(data, key=lambda x: x.get("orderId", 0))
+    steps_sorted = sorted(steps, key=lambda x: x.get("orderId", 0))
     idx = max(1, int(failed_step_num)) - 1
     if idx >= len(steps_sorted):
         idx = len(steps_sorted) - 1
-
-    step_result_id = steps_sorted[idx].get("id")
+    step_result_id = steps_sorted[idx].get("id") or steps_sorted[idx].get("stepResultId")
     if not step_result_id:
         raise RuntimeError("Couldn't resolve stepResultId from Zephyr response.")
-
-    # 2) update chosen step
-    rel_update = f"/public/rest/api/1.0/stepresult/{step_result_id}"
+    rel_update = f"/public/rest/api/1.0/execution/{execution_id}/stepResult/{step_result_id}"
     body = {"status": {"id": 2}}  # 2 = Fail
     zephyr_put(rel_update, json_body=body)
 
-def fail_execution(exec_obj):
-    """
-    Cloud: set execution status via /execution/{id}/execute with status + IDs.
-    """
-    rel = f"/public/rest/api/1.0/execution/{exec_obj['id']}/execute"
-    body = {
-        "issueId":   exec_obj["issueId"],
-        "projectId": exec_obj["projectId"],
-        "versionId": exec_obj["versionId"],
-        "cycleId":   exec_obj["cycleId"],
-        "status": {"id": 2}  # 2 = FAIL
-    }
+def fail_execution(execution_id):
+    rel = f"/public/rest/api/1.0/execution/{execution_id}"
+    body = {"status": {"id": 2}}  # 2 = Fail
     zephyr_put(rel, json_body=body)
 
 # ============================================================
@@ -569,7 +736,6 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
     story_key = test_fetch.get("linked_story_key")
     if not story_key:
         return False, "No linked Story found on Test ticket."
-
     # Fetch Story to discover Epic
     url_story = f"{JIRA_BASE_URL}/rest/api/3/issue/{story_key}"
     r = requests.get(url_story, params={"fields": "parent"}, headers={"Accept":"application/json"}, auth=auth, timeout=30)
@@ -589,10 +755,8 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
                 epic_key = el.get("key")
             elif isinstance(el, str) and el:
                 epic_key = el
-
     if not epic_key:
         return False, "No Epic found for linked Story."
-
     # First attempt: set 'parent' to Epic
     try:
         r3 = requests.put(
@@ -606,7 +770,6 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
             return True, f"Parent set to Epic {epic_key}."
     except Exception:
         pass
-
     # Fallback: try 'Epic Link' field edit
     epic_link_fid = get_field_id_by_name("Epic Link", auth)
     if epic_link_fid:
@@ -626,34 +789,47 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
 # STREAMLIT UI
 # ============================================================
 st.set_page_config(page_title="Jira Defect Creator", layout="centered")
-st.title("🐞 AutoDefect Logger")
+
+# --- NEW: Title bar (logo + title), green divider, fixed footer ---
+# You placed mg_branding.png at the repo root; if you move it to assets/, update the path.
+add_titlebar_branding(
+    header_image_path="mg_branding.png",
+    app_title="🐞 AutoDefect Logger",
+    app_subtitle="Jira Defect Creator",
+    footer_text="AutoDefect Logger • © 2026",
+    # If you have exact brand hex codes, you can force them:
+    # brand_green_hex="#00A878",
+    # brand_teal_hex="#004D53",
+    logo_side="right",
+    logo_height_px=48,
+    max_inner_width_px=1200
+)
+
+# Optional helper note under the bar
 st.markdown("**Fields marked with * are mandatory**")
 
-test_ticket     = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
-failed_step_num = st.number_input("Failed Test Step Number *", min_value=1, value=3, step=1)
-severity        = st.selectbox("Severity *", ["Sev-1", "Sev-2", "Sev-3", "Sev-4"])
-priority        = st.selectbox("Priority *", ["Critical", "Major", "Medium", "Minor"])
-test_phase      = st.selectbox("Test Phase *", ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"])
-uploaded_files  = st.file_uploader("📎 Attach Evidence (screenshots, logs)", accept_multiple_files=True)
+test_ticket      = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
+failed_step_num  = st.number_input("Failed Test Step Number *", min_value=1, value=1, step=1)
+severity         = st.selectbox("Severity *", ["Sev-1", "Sev-2", "Sev-3", "Sev-4"])
+priority         = st.selectbox("Priority *", ["Critical", "Major", "Medium", "Minor"])
+test_phase       = st.selectbox("Test Phase *", ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"])
+uploaded_files   = st.file_uploader("📎 Attach Evidence (screenshots, logs)", accept_multiple_files=True)
 
 # ============================================================
 # AI-LITE GENERATION
 # ============================================================
 use_ai = st.checkbox("Use AI-lite to draft description & steps (beta)", value=True)
-
 if st.button("🧠 Generate Draft (AI-lite)"):
     if not test_ticket.strip():
         st.error("Enter the Test Ticket key first.")
         st.stop()
     auth = get_auth()
-
     # Background pulls
     try:
         steps_list, expected_from_zephyr = get_zephyr_steps_and_expected(test_ticket.strip(), auth)
     except Exception as e:
         steps_list, expected_from_zephyr = [], []
         st.warning(f"Zephyr fetch failed: {e}")
-
     try:
         copied = fetch_test_ticket_fields_and_text(test_ticket.strip(), auth)
     except Exception as e:
@@ -666,7 +842,6 @@ if st.button("🧠 Generate Draft (AI-lite)"):
         st.warning(f"Could not fetch fields/description from Test: {e}")
 
     evidence_names = [f.name for f in (uploaded_files or [])]
-
     ctx = {
         "project_key": PROJECT_KEY,
         "test_key": test_ticket.strip(),
@@ -687,7 +862,7 @@ if st.button("🧠 Generate Draft (AI-lite)"):
     }
     ai_out = ai_lite_draft(ctx)
     st.session_state["ai_out"] = ai_out
-    st.session_state["ctx"]    = ctx
+    st.session_state["ctx"] = ctx
     st.success("AI-lite draft generated. Review and edit below.")
 
 # Editable preview (Impact & AI notes removed)
@@ -697,8 +872,8 @@ if use_ai and "ai_out" in st.session_state:
     steps_txt = "\n".join(ai.get("steps_to_reproduce", []))
     steps_txt = st.text_area("Steps to reproduce (one per line)", steps_txt, height=150)
     ai["steps_to_reproduce"] = [s.strip() for s in steps_txt.splitlines() if s.strip()]
-    ai["expected_results"] = st.text_area("Expected Results", ai.get("expected_results", ""), height=100)
-    ai["actual_results"]   = st.text_area("Actual Results",   ai.get("actual_results",   ""), height=100)
+    ai["expected_results"]   = st.text_area("Expected Results", ai.get("expected_results", ""), height=100)
+    ai["actual_results"]     = st.text_area("Actual Results", ai.get("actual_results", ""), height=100)
 
 # ============================================================
 # HELPERS: SUMMARY, TRANSITION TO FAILED
@@ -726,7 +901,7 @@ def transition_issue_to_failed(issue_key, auth):
     transitions = (r.json() or {}).get("transitions", [])
     target = None
     for t in transitions:
-        name   = (t.get("name") or "").strip().lower()
+        name = (t.get("name") or "").strip().lower()
         to_name = (t.get("to", {}).get("name") or "").strip().lower()
         if name in ("failed", "fail") or to_name in ("failed", "fail", "fail status", "fail state", "fail"):
             target = t.get("id")
@@ -739,7 +914,6 @@ def transition_issue_to_failed(issue_key, auth):
     if not target:
         st.warning("Could not locate a 'Failed' transition for this issue.")
         return False
-
     resp = requests.post(
         f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/transitions",
         json={"transition": {"id": str(target)}},
@@ -759,7 +933,6 @@ if st.button("🚀 Create Defect"):
     if not all([test_ticket.strip(), severity, priority, test_phase]):
         st.error("Please fill all mandatory fields (*)")
         st.stop()
-
     auth = get_auth()
 
     # Resolve issue type & field meta
@@ -798,7 +971,6 @@ if st.button("🚀 Create Defect"):
     except Exception as e:
         steps_list, expected_from_zephyr = [], []
         st.warning(f"Zephyr fetch failed: {e}")
-
     try:
         copied = fetch_test_ticket_fields_and_text(test_ticket.strip(), auth)
     except Exception as e:
@@ -847,8 +1019,10 @@ if st.button("🚀 Create Defect"):
     else:
         description_adf = {
             "type": "doc", "version": 1,
-            "content": [adf_heading("Issue Description"),
-                        adf_paragraph(copied["text"]["issue_description"] or f"Related Test Ticket: {test_ticket.strip()}")]
+            "content": [
+                adf_heading("Issue Description"),
+                adf_paragraph(copied["text"]["issue_description"] or f"Related Test Ticket: {test_ticket.strip()}")
+            ]
         }
 
     # Create payload — ensure description is ADF; use option ids if available, else label values
@@ -926,7 +1100,7 @@ if st.button("🚀 Create Defect"):
     if link_resp.status_code not in (200, 201, 204):
         st.warning(f"Linking returned {link_resp.status_code}: {link_resp.text[:300]}")
 
-    # ---- Upload attachments (if the user added any)
+    # --- Upload attachments (if the user added any)
     if uploaded_files:
         for file in uploaded_files:
             attach_headers = {"X-Atlassian-Token": "no-check", "Accept": "application/json"}
@@ -949,30 +1123,27 @@ if st.button("🚀 Create Defect"):
 
     # Zephyr: link defect to latest execution, fail the failed step & execution
     try:
-        exec_obj = get_latest_execution(test_ticket.strip(), auth)
-        if not exec_obj:
+        execution_id = find_latest_execution_id(test_ticket.strip(), auth)
+        if not execution_id:
             st.warning("No Zephyr execution found for this Test.")
         else:
-            # Link defect (Cloud via /execute with IDs)
             try:
-                link_defect_to_execution(exec_obj, issue_key)
+                link_defect_to_execution(execution_id, issue_key, auth)
                 st.success("🔗 Defect linked to Zephyr execution (Defects section).")
             except Exception as e:
                 st.warning(f"Failed to link defect to Zephyr execution: {e}")
-
-            # Update failed step (best-effort; may be unsupported on some tenants)
+            # Update failed step (best‑effort; may be unsupported on some tenants)
             try:
                 if ENABLE_STEP_UPDATE:
-                    fail_zephyr_step(exec_obj["id"], failed_step_num)
+                    fail_zephyr_step(execution_id, failed_step_num)
                     st.success("❗ Failed step updated in Zephyr.")
                 else:
                     st.info("Step update skipped (ENABLE_STEP_UPDATE = False).")
             except Exception as e:
                 st.warning(f"Could not update Zephyr failed step: {e}")
-
-            # Fail the overall execution (Cloud via /execute with IDs)
+            # Fail the overall execution
             try:
-                fail_execution(exec_obj)
+                fail_execution(execution_id)
                 st.success("🟥 Zephyr execution status set to FAIL.")
             except Exception as e:
                 st.warning(f"Failed to update Zephyr execution status: {e}")
@@ -985,9 +1156,4 @@ if st.button("🚀 Create Defect"):
         st.link_button("Open Defect in Jira", f"{JIRA_BASE_URL}/browse/{ik}")
     else:
         st.info("Create a defect first to enable the Jira link.")
-# - Improved defect title (uses Test summary or AI suggestion)
-# - Removed Impact & AI Notes from UI and ADF description
-# - Clearer description sections with bold highlights in steps
-# - After linking, transition Test ticket to "Failed" (dynamic transition lookup)
-# - ADF description enforced; safe link rendering; attachments upload
-# - Zephyr Cloud fixes:
+``
