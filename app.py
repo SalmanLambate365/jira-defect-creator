@@ -1109,17 +1109,6 @@ if st.button("🚀 Create Defect"):
     ok, msg = try_set_defect_parent_to_epic(issue_key, copied, auth)
     st.info(f"Epic link: {msg}")
 
-    # Link defect ↔ test ticket
-    link_payload = {"type": {"name": "Relates"}, "inwardIssue": {"key": test_ticket.strip()}, "outwardIssue": {"key": issue_key}}
-    link_resp = requests.post(
-        f"{JIRA_BASE_URL}/rest/api/3/issueLink",
-        json=link_payload,
-        headers=headers_json(),
-        auth=auth,
-        timeout=30
-    )
-    if link_resp.status_code not in (200, 201, 204):
-        st.warning(f"Linking returned {link_resp.status_code}: {link_resp.text[:300]}")
 
     # --- Upload attachments (if the user added any)
     if uploaded_files:
@@ -1137,35 +1126,37 @@ if st.button("🚀 Create Defect"):
                 st.warning(f"Attachment '{file.name}' failed: {attach_resp.status_code} {attach_resp.text[:200]}")
         st.success("📎 Attachments uploaded, fields synced & Test Ticket linked")
 
-    # Transition Test ticket to Failed (dynamic lookup; falls back to id '51')
+ 
+    # Transition Test ticket to Failed (Jira)
     transitioned = transition_issue_to_failed(test_ticket.strip(), auth)
     if transitioned:
         st.success("✅ Test ticket transitioned to 'Failed'.")
 
-    # Zephyr: link defect to latest execution, fail the failed step & execution
+    # Zephyr: link defect to latest execution & set execution to FAIL
     try:
-        execution_id = find_latest_execution_id(test_ticket.strip(), auth)
-        if not execution_id:
+        execution_obj = find_latest_execution(test_ticket.strip(), auth)
+        if not execution_obj:
             st.warning("No Zephyr execution found for this Test.")
         else:
             try:
-                link_defect_to_execution(execution_id, issue_key, auth)
-                st.success("🔗 Defect linked to Zephyr execution (Defects section).")
+                link_defect_to_execution_cloud(execution_obj, issue_key, auth)
+                st.success("🔗 Defect linked to Zephyr execution.")
             except Exception as e:
                 st.warning(f"Failed to link defect to Zephyr execution: {e}")
-            # Update failed step (best‑effort; may be unsupported on some tenants)
+
+            # Step update (disabled by default)
             try:
                 if ENABLE_STEP_UPDATE:
-                    fail_zephyr_step(execution_id, failed_step_num)
+                    fail_zephyr_step(execution_obj.get('id'), failed_step_num)
                     st.success("❗ Failed step updated in Zephyr.")
                 else:
                     st.info("Step update skipped (ENABLE_STEP_UPDATE = False).")
             except Exception as e:
                 st.warning(f"Could not update Zephyr failed step: {e}")
-            # Fail the overall execution
+
             try:
-                fail_execution(execution_id)
-                st.success("🟥 Zephyr execution status set to FAIL.")
+                fail_execution_cloud(execution_obj)
+                st.success("🟥 Zephyr execution status set to FAIL (Zephyr).")
             except Exception as e:
                 st.warning(f"Failed to update Zephyr execution status: {e}")
     except Exception as e:
@@ -1177,3 +1168,6 @@ if st.button("🚀 Create Defect"):
         st.link_button("Open Defect in Jira", f"{JIRA_BASE_URL}/browse/{ik}")
     else:
         st.info("Create a defect first to enable the Jira link.")
+
+import hashlib
+import hmac
