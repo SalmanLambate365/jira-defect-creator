@@ -2,16 +2,6 @@
 # app.py
 # --------------------------------------------------------------------------------
 # Jira Defect Creator (Create defect from Test; copy fields; Zephyr integration)
-# Enhancements:
-# - Correct mapping of Cust Tech Delivery Teams & Cust Tech Products
-# - Parent field set to Epic linked to the Test ticket's linked Story (best-effort)
-# - Labels copied excluding 'JiraTestGenAI'
-# - Improved defect title (uses Test summary or AI suggestion)
-# - Removed Impact & AI Notes from UI and ADF description
-# - Clearer description sections with bold highlights in steps
-# - After linking, transition Test ticket to "Failed" (dynamic transition lookup)
-# - Link defect to Zephyr execution, fail the failed step & the execution status
-# - ADF description enforced; safe link rendering; attachments upload
 # --------------------------------------------------------------------------------
 import base64
 import hashlib
@@ -70,7 +60,6 @@ def _dominant_palette(img: Image.Image, k: int = 8):
     Returns a list of ((R,G,B), count) sorted by count desc using adaptive palette.
     """
     small = img.copy().convert("RGBA").resize((160, 160))
-    # remove fully transparent pixels
     pixels = [px for px in small.getdata() if px[3] > 0]
     if not pixels:
         return [((22, 163, 74), 1)]  # fallback green (#16A34A)
@@ -129,122 +118,130 @@ def _pick_brand_colors(img: Image.Image):
     return _rgb_to_hex(green_best), _rgb_to_hex(teal_best)
 
 def add_titlebar_branding(
-    header_image_path,
-    app_title="🐞 AutoDefect Logger",
-    app_subtitle="Jira Defect Creator",
-    footer_text="AutoDefect Logger • © 2026",
-    brand_green_hex=None,
-    brand_teal_hex=None,
-    logo_height_px=48,       # height of the logo/banner image in the bar
-    logo_side="right",       # "right" or "left"
-    max_inner_width_px=1200  # inner width limit for tidy look on ultrawide
+    header_image_path: str,
+    app_title: str = "🐞 AutoDefect Logger",
+    app_subtitle: str | None = "Jira Defect Creator",
+    footer_text: str = "AutoDefect Logger • © 2026",
+    brand_green_hex: str | None = None,
+    brand_teal_hex: str | None = None,
+    logo_height_px: int = 48,
+    logo_side: str = "right",
+    max_inner_width_px: int = 1200
 ):
     """
-    Renders a title bar with teal background and side-by-side title + logo,
-    then a green divider line, and a fixed footer with a green top border.
-    Uses components.html to avoid Markdown escaping/fences.
+    Renders a title bar with teal background (title + logo in separate containers),
+    a green divider below, and a fixed footer. Uses components.html to avoid
+    Markdown/fence issues, and ensures the base64 logo never prints as text.
     """
-    img_tag = ""
+    logo_data_url = ""
     if Path(header_image_path).exists():
         img = Image.open(header_image_path).convert("RGB")
         auto_green, auto_teal = _pick_brand_colors(img)
         brand_green = brand_green_hex or auto_green
         brand_teal  = brand_teal_hex  or auto_teal
-
-        # encode image to base64 for clean placement via HTML
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         b64 = base64.b64encode(buf.getvalue()).decode()
-        img_tag = f"data:image/png;base64,{b64}"
+        logo_data_url = f"data:image/png;base64,{b64}"
     else:
         brand_green = brand_green_hex or "#16A34A"
         brand_teal  = brand_teal_hex  or "#0f5b5f"
+        logo_data_url = ""  # no logo available
 
     title_html = f"""
-        <div class="mg-title">
-            <div class="mg-title-line">{app_title}</div>
-            {f"<div class='mg-subtitle'>{app_subtitle}</div>" if app_subtitle else ""}
-        </div>
+      <div class="mg-title">
+        <div class="mg-title-line">{app_title}</div>
+        {f"<div class='mg-subtitle'>{app_subtitle}</div>" if app_subtitle else ""}
+      </div>
     """
-    inner = f"{img_tag}{title_html}" if logo_side.lower() == "left" else f"{title_html}{img_tag}"
 
-    # Build HTML blob and render via components.html (no Markdown involved)
+    # Left/Right fixed containers to keep layout solid
+    if logo_side.lower() == "left":
+        left_html  = f"<div class='mg-logo-wrap'>{f'<img class=\"mg-logo\" src=\"{logo_data_url}\" alt=\"M&G Logo\" />' if logo_data_url else ''}</div>"
+        right_html = f"<div class='mg-title-wrap'>{title_html}</div>"
+    else:
+        left_html  = f"<div class='mg-title-wrap'>{title_html}</div>"
+        right_html = f"<div class='mg-logo-wrap'>{f'<img class=\"mg-logo\" src=\"{logo_data_url}\" alt=\"M&G Logo\" />' if logo_data_url else ''}</div>"
+
     html_blob = f"""
-        <style>
-            :root {{
-                --brand-green: {brand_green};
-                --brand-teal:  {brand_teal};
-                --footer-fg:   #334155;   /* slate-ish */
-                --title-fg:    #ffffff;   /* white */
-                --subtitle-fg: #e2e8f0;   /* light slate */
-                --surface:     #ffffff;
-            }}
-            .mg-topbar-wrap {{
-                width: 100%;
-                background-color: var(--brand-teal);
-                margin: 0;
-                padding: 0;
-            }}
-            .mg-topbar {{
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: 12px;
-                max-width: {max_inner_width_px}px;
-                margin: 0 auto;
-                padding: 10px 14px;
-            }}
-            .mg-title {{ display: flex; flex-direction: column; gap: 2px; }}
-            .mg-title-line {{
-                color: var(--title-fg);
-                font-weight: 700;
-                font-size: 1.25rem;
-                line-height: 1.2;
-                letter-spacing: 0.2px;
-            }}
-            .mg-subtitle {{
-                color: var(--subtitle-fg);
-                font-weight: 500;
-                font-size: 0.95rem;
-                line-height: 1.2;
-            }}
-            .mg-logo {{
-                height: {logo_height_px}px;
-                width: auto;
-                display: block;
-                border-radius: 6px;
-                box-shadow: none;
-            }}
-            .green-line {{
-                height: 4px;
-                background-color: var(--brand-green);
-                border: none;
-                margin: 0.25rem 0 1.25rem 0;
-            }}
-            .footer {{
-                position: fixed; left: 0; right: 0; bottom: 0; width: 100%;
-                background: var(--surface); border-top: 4px solid var(--brand-green);
-                padding: 8px 16px; font-size: 0.9rem; color: var(--footer-fg); z-index: 9999;
-            }}
-            /* Ensure Streamlit's main container has room for fixed footer */
-            .block-container {{ padding-top: 1rem; padding-bottom: 6rem; }}
-            @media (max-width: 480px) {{
-                .mg-title-line {{ font-size: 1.05rem; }}
-                .mg-subtitle   {{ font-size: 0.85rem; }}
-            }}
-        </style>
-        <div class="mg-topbar-wrap">
-          <div class="mg-topbar">
-            {inner}
-          </div>
-        </div>
-        <div class="green-line"></div>
-        <div class="footer">{footer_text}</div>
-    """
-    # Height ~ title bar + divider (footer is fixed)
-    st_html(html_blob, height=140, scrolling=False)
+      <style>
+        :root {{
+          --brand-green: {brand_green};
+          --brand-teal:  {brand_teal};
+          --footer-fg:   #334155;
+          --title-fg:    #ffffff;
+          --subtitle-fg: #e2e8f0;
+          --surface:     #ffffff;
+        }}
+        .mg-topbar-wrap {{
+          width: 100%;
+          background-color: var(--brand-teal);
+          margin: 0;
+          padding: 0;
+        }}
+        .mg-topbar {{
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          max-width: {max_inner_width_px}px;
+          margin: 0 auto;
+          padding: 10px 14px;
+        }}
+        .mg-title-wrap {{ display:flex; align-items:center; }}
+        .mg-logo-wrap  {{ display:flex; align-items:center; }}
+        .mg-title {{ display:flex; flex-direction:column; gap:2px; }}
+        .mg-title-line {{
+          color: var(--title-fg);
+          font-weight: 700;
+          font-size: 1.25rem;
+          line-height: 1.2;
+          letter-spacing: 0.2px;
+        }}
+        .mg-subtitle {{
+          color: var(--subtitle-fg);
+          font-weight: 500;
+          font-size: 0.95rem;
+          line-height: 1.2;
+        }}
+        .mg-logo {{
+          height: {logo_height_px}px;
+          width: auto;
+          display: block;
+          border-radius: 6px;
+        }}
+        .green-line {{
+          height: 4px;
+          background-color: var(--brand-green);
+          border: none;
+          margin: 0.25rem auto 1.25rem auto;
+          max-width: {max_inner_width_px}px; /* align with inner width */
+        }}
+        .footer {{
+          position: fixed; left: 0; right: 0; bottom: 0; width: 100%;
+          background: var(--surface); border-top: 4px solid var(--brand-green);
+          padding: 8px 16px; font-size: 0.9rem; color: var(--footer-fg); z-index: 9999;
+        }}
+        .block-container {{ padding-top: 1rem; padding-bottom: 6rem; }}
+        @media (max-width: 480px) {{
+          .mg-title-line {{ font-size: 1.05rem; }}
+          .mg-subtitle   {{ font-size: 0.85rem; }}
+        }}
+      </style>
 
-    # Spacer so bottom widgets aren't hidden behind the fixed footer
+      <div class="mg-topbar-wrap">
+        <div class="mg-topbar">
+          {left_html}
+          {right_html}
+        </div>
+      </div>
+      <div class="green-line"></div>
+      <div class="footer">{footer_text}</div>
+    """
+
+    # Render via components.html so HTML/CSS isn't escaped
+    st_html(html_blob, height=150, scrolling=False)
+    # Spacer to avoid overlap with fixed footer
     st.markdown("<div style='height: 64px'></div>", unsafe_allow_html=True)
 
 # ============================================================
@@ -654,7 +651,7 @@ def find_latest_execution_id(jira_test_key, auth):
         rel = "/public/rest/api/1.0/executions"
         params = {"issueId": issue_id, "projectId": project_id, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
-        st.write("DEBUG: Executions API response:", data)  # Debug log (optional)
+        # st.write("DEBUG: Executions API response:", data)  # optional
         execs = data.get("executions") or []
         if execs:
             exec_ids = [e.get("execution", {}).get("id") for e in execs if e.get("execution")]
@@ -668,7 +665,7 @@ def find_latest_execution_id(jira_test_key, auth):
         zql = f'issue = "{jira_test_key}" ORDER BY executionDate DESC'
         params = {"zqlQuery": zql, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
-        st.write("DEBUG: ZQL API response:", data)
+        # st.write("DEBUG: ZQL API response:", data)  # optional
         execs = (data.get("searchResult") or {}).get("executions") or []
         if execs:
             exec_ids = [e.get("execution", {}).get("id") for e in execs if e.get("execution")]
@@ -768,14 +765,12 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
 st.set_page_config(page_title="Jira Defect Creator", layout="centered")
 
 # --- NEW: Title bar (logo + title), green divider, fixed footer ---
-# Your image is at repo root as mg_branding.png. If moved to assets/, update the path.
 add_titlebar_branding(
-    header_image_path="mg_branding.png",
+    header_image_path="mg_branding.png",  # change to "assets/mg_branding.png" if moved
     app_title="🐞 AutoDefect Logger",
     app_subtitle="Jira Defect Creator",
     footer_text="AutoDefect Logger • © 2026",
-    # If you have exact brand hex codes, you can force them:
-    # brand_green_hex="#00A878",
+    # brand_green_hex="#00A878",  # uncomment to force exact brand colors
     # brand_teal_hex="#004D53",
     logo_side="right",
     logo_height_px=48,
@@ -786,7 +781,7 @@ add_titlebar_branding(
 st.markdown("**Fields marked with * are mandatory**")
 
 test_ticket      = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
-failed_step_num  = st.number_input("Failed Test Step Number *", min_value=1, value=1, step=1)
+failed_step_num  = st.number_input("Failed Test Step Number *", min_value=1, value=3, step=1)
 severity         = st.selectbox("Severity *", ["Sev-1", "Sev-2", "Sev-3", "Sev-4"])
 priority         = st.selectbox("Priority *", ["Critical", "Major", "Medium", "Minor"])
 test_phase       = st.selectbox("Test Phase *", ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"])
