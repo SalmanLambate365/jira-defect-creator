@@ -909,7 +909,7 @@ def build_defect_summary_from_test(copied):
     return "Observed issue during test execution"
 
 def transition_issue_to_failed(issue_key, auth):
-    # Discover transition id named 'Failed' (or 'Fail') dynamically
+    # Discover transition id named 'Fail' (or 'Fail') dynamically
     r = requests.get(
         f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/transitions",
         headers={"Accept":"application/json"},
@@ -924,7 +924,7 @@ def transition_issue_to_failed(issue_key, auth):
     for t in transitions:
         name = (t.get("name") or "").strip().lower()
         to_name = (t.get("to", {}).get("name") or "").strip().lower()
-        if name in ("failed", "fail") or to_name in ("failed", "fail", "fail status", "fail state", "fail"):
+        if name in ("FAIL", "FAILED") or to_name in ("failed", "fail", "fail status", "fail state", "fail"):
             target = t.get("id")
             break
     if not target:
