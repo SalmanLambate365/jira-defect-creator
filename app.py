@@ -118,7 +118,7 @@ def add_titlebar_branding(
     footer_text: str = "AutoDefect Logger • © 2026",
     brand_green_hex: str | None = None,
     brand_teal_hex: str | None = None,
-    logo_height_px: int = 56,
+    logo_height_px: int = 48,
     logo_side: str = "right",
     max_inner_width_px: int = 1200
 ):
