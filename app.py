@@ -292,8 +292,6 @@ def add_titlebar_branding(
         </style>
         <div class="footer-fixed">{footer_text}</div>
     """, unsafe_allow_html=True)
-``
-
 
 # ============================================================
 # BASIC HELPERS (AUTH / JIRA COMMON)
