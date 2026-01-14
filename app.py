@@ -218,12 +218,6 @@ def add_titlebar_branding(
           max-width: {max_inner_width_px}px;      /* toggle 100% for full-width divider */
         }}
 
-        /* Mobile tweaks */
-        @media (max-width: 480px) {{
-          .mg-title-line {{ font-size: 1.05rem; text-shadow: none; }}
-          .mg-subtitle   {{ font-size: 0.85rem; }}
-          .mg-logo       {{ height: 44px; }}
-        }}
       </style>
 
       <div class="mg-topbar-wrap">
