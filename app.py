@@ -738,8 +738,6 @@ def fail_execution_cloud(execution_obj):
             "Bulk executions update failed, and fallback PUT /execution/{id} "
             f"also failed.\nBulk error: {bulk_err_msg}\nPUT error: {put_err}"
         )
-``
-
 
 
 # ============================================================
