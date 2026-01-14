@@ -158,15 +158,58 @@ def _pick_brand_colors(img: Image.Image):
     if not teal_best:  teal_best  = (5, 68, 74)
     return _rgb_to_hex(green_best), _rgb_to_hex(teal_best)
 def add_titlebar_branding(
-    header_image_path: str,
-    app_title: str = "🐞 AutoDefect Logger",
-    app_subtitle: str | None = "Jira Defect Creator",
-    footer_text: str = "AutoDefect Logger • © 2026",
-    brand_green_hex: str | None = None,
-    brand_teal_hex: str | None = None,
-    logo_height_px: int = 48,
-    logo_side: str = "right",
-    max_inner_width_px: int = 1200
+    
+- .mg-topbar {{
+-   display: flex;
+-   align-items: center;
+-   justify-content: space-between;
+-   gap: 12px;
+-   max-width: {max_inner_width_px}px;  /* toggle 100% for full-width bar */
+-   margin: 0 auto;
+-   padding: 10px 14px;
+- }}
++ .mg-topbar {{
++   display: flex;
++   align-items: center;
++   justify-content: space-between;
++   gap: 12px;
++   max-width: 100%;                  /* full-bleed header */
++   margin: 0;                        /* no centering margin */
++   padding: 12px 16px;               /* a bit more vertical room */
++   box-sizing: border-box;
++ }}
+
+- .green-line {{
+-   height: 4px;
+-   background-color: var(--brand-green);
+-   border: none;
+-   margin: 0.4rem auto 0.9rem auto;
+-   max-width: {max_inner_width_px}px;      /* toggle 100% for full-width divider */
+- }}
++; }}+ .green-line {{
+
+- .mg-logo {{
+-   height: {logo_height_px}px;
+-   width: auto;
+-   display: block;
+-   border-radius: 6px;
+- }}
++ .mg-logo {{
++   height: {logo_height_px}px;
++   width: auto;
++   display: block;
++   border-radius: 6px;
++   max-width: 100%;
++ }}
++   height: 4px;
++   background-color: var(--brand-green);
++   border: none;
++   margin: 0;                         /* sit flush under the bar */
++   width: 100%;                       /* full-bleed divider */
++ }}
+
++ /* Prevent any accidental clipping of the logo at the edges */
+
 ):
     """
     Renders title bar + green divider inside an iframe and injects the footer
@@ -274,7 +317,7 @@ def add_titlebar_branding(
       </div>
       <div class="green-line"></div>
     """
-    st_html(html_blob, height=115, scrolling=False)
+    st_html(html_blob, height=140, scrolling=False)
 
     # ---- FOOTER in main page DOM (fixed to viewport bottom) + global spacing refinements ----
     st.markdown(f"""
