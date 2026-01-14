@@ -26,6 +26,7 @@ from pathlib import Path
 from PIL import Image
 
 import streamlit as st
+from streamlit.components.v1 import html as st_html
 import requests
 from requests.auth import HTTPBasicAuth
 
@@ -41,8 +42,8 @@ TEST_PHASE_FIELD_ID = "customfield_10245"  # Test Phase
 SEVERITY_FIELD_ID   = "customfield_10260"  # Severity
 
 # Resolve these by NAME → ID at runtime (case-insensitive)
-CUST_TECH_PORTFOLIO_NAME   = "Cust Tech Portfolio"
-CUST_TECH_PRODUCT_NAME     = "Cust Tech Products"
+CUST_TECH_PORTFOLIO_NAME     = "Cust Tech Portfolio"
+CUST_TECH_PRODUCT_NAME       = "Cust Tech Products"
 CUST_TECH_DELIVERY_TEAM_NAME = "Cust Tech Delivery Teams"
 
 # Names for description sections pulled from the Test ticket
@@ -69,9 +70,10 @@ def _dominant_palette(img: Image.Image, k: int = 8):
     Returns a list of ((R,G,B), count) sorted by count desc using adaptive palette.
     """
     small = img.copy().convert("RGBA").resize((160, 160))
+    # remove fully transparent pixels
     pixels = [px for px in small.getdata() if px[3] > 0]
     if not pixels:
-        return [((22, 163, 74), 1)]  # fallback green (Tailwind emerald-600)
+        return [((22, 163, 74), 1)]  # fallback green (#16A34A)
 
     pal_img = small.convert("P", palette=Image.ADAPTIVE, colors=k)
     palette = pal_img.getpalette()[:k * 3]
@@ -140,6 +142,7 @@ def add_titlebar_branding(
     """
     Renders a title bar with teal background and side-by-side title + logo,
     then a green divider line, and a fixed footer with a green top border.
+    Uses components.html to avoid Markdown escaping/fences.
     """
     img_tag = ""
     if Path(header_image_path).exists():
@@ -165,7 +168,8 @@ def add_titlebar_branding(
     """
     inner = f"{img_tag}{title_html}" if logo_side.lower() == "left" else f"{title_html}{img_tag}"
 
-    st.markdown(f"""
+    # Build HTML blob and render via components.html (no Markdown involved)
+    html_blob = f"""
         <style>
             :root {{
                 --brand-green: {brand_green};
@@ -175,16 +179,12 @@ def add_titlebar_branding(
                 --subtitle-fg: #e2e8f0;   /* light slate */
                 --surface:     #ffffff;
             }}
-
-            /* Top bar wrapper */
             .mg-topbar-wrap {{
                 width: 100%;
                 background-color: var(--brand-teal);
                 margin: 0;
                 padding: 0;
             }}
-
-            /* Inner bar: side-by-side */
             .mg-topbar {{
                 display: flex;
                 align-items: center;
@@ -194,28 +194,20 @@ def add_titlebar_branding(
                 margin: 0 auto;
                 padding: 10px 14px;
             }}
-
-            .mg-title {{
-                display: flex;
-                flex-direction: column;
-                gap: 2px;
-            }}
-
+            .mg-title {{ display: flex; flex-direction: column; gap: 2px; }}
             .mg-title-line {{
                 color: var(--title-fg);
                 font-weight: 700;
-                font-size: 1.25rem;  /* ~20px */
+                font-size: 1.25rem;
                 line-height: 1.2;
                 letter-spacing: 0.2px;
             }}
-
             .mg-subtitle {{
                 color: var(--subtitle-fg);
                 font-weight: 500;
                 font-size: 0.95rem;
                 line-height: 1.2;
             }}
-
             .mg-logo {{
                 height: {logo_height_px}px;
                 width: auto;
@@ -223,41 +215,24 @@ def add_titlebar_branding(
                 border-radius: 6px;
                 box-shadow: none;
             }}
-
-            /* Divider line under the bar */
             .green-line {{
                 height: 4px;
                 background-color: var(--brand-green);
                 border: none;
                 margin: 0.25rem 0 1.25rem 0;
             }}
-
-            /* Fixed footer */
             .footer {{
-                position: fixed;
-                left: 0; right: 0; bottom: 0;
-                width: 100%;
-                background: var(--surface);
-                border-top: 4px solid var(--brand-green);
-                padding: 8px 16px;
-                font-size: 0.9rem;
-                color: var(--footer-fg);
-                z-index: 9999;
+                position: fixed; left: 0; right: 0; bottom: 0; width: 100%;
+                background: var(--surface); border-top: 4px solid var(--brand-green);
+                padding: 8px 16px; font-size: 0.9rem; color: var(--footer-fg); z-index: 9999;
             }}
-
-            /* Adjust Streamlit default paddings; add room for fixed footer */
-            .block-container {{
-                padding-top: 1rem;
-                padding-bottom: 6rem;
-            }}
-
-            /* Responsive tweaks */
+            /* Ensure Streamlit's main container has room for fixed footer */
+            .block-container {{ padding-top: 1rem; padding-bottom: 6rem; }}
             @media (max-width: 480px) {{
                 .mg-title-line {{ font-size: 1.05rem; }}
                 .mg-subtitle   {{ font-size: 0.85rem; }}
             }}
         </style>
-
         <div class="mg-topbar-wrap">
           <div class="mg-topbar">
             {inner}
@@ -265,9 +240,11 @@ def add_titlebar_branding(
         </div>
         <div class="green-line"></div>
         <div class="footer">{footer_text}</div>
-    """, unsafe_allow_html=True)
+    """
+    # Height ~ title bar + divider (footer is fixed)
+    st_html(html_blob, height=140, scrolling=False)
 
-    # Spacer so bottom widgets aren't hidden behind fixed footer
+    # Spacer so bottom widgets aren't hidden behind the fixed footer
     st.markdown("<div style='height: 64px'></div>", unsafe_allow_html=True)
 
 # ============================================================
@@ -526,7 +503,7 @@ def adf_paragraph_segments(segments):
 def adf_paragraph_with_bold_quotes(line: str):
     """Render a line; anything inside single quotes '...' is bold."""
     segments = []
-    parts = re.split(r"(')", line)
+    parts = re.split(r"(')", line)  # split keeping the quote token
     in_quote = False
     buf = ""
     for p in parts:
@@ -677,7 +654,7 @@ def find_latest_execution_id(jira_test_key, auth):
         rel = "/public/rest/api/1.0/executions"
         params = {"issueId": issue_id, "projectId": project_id, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
-        st.write("DEBUG: Executions API response:", data)  # Debug log
+        st.write("DEBUG: Executions API response:", data)  # Debug log (optional)
         execs = data.get("executions") or []
         if execs:
             exec_ids = [e.get("execution", {}).get("id") for e in execs if e.get("execution")]
@@ -791,7 +768,7 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
 st.set_page_config(page_title="Jira Defect Creator", layout="centered")
 
 # --- NEW: Title bar (logo + title), green divider, fixed footer ---
-# You placed mg_branding.png at the repo root; if you move it to assets/, update the path.
+# Your image is at repo root as mg_branding.png. If moved to assets/, update the path.
 add_titlebar_branding(
     header_image_path="mg_branding.png",
     app_title="🐞 AutoDefect Logger",
@@ -1156,4 +1133,3 @@ if st.button("🚀 Create Defect"):
         st.link_button("Open Defect in Jira", f"{JIRA_BASE_URL}/browse/{ik}")
     else:
         st.info("Create a defect first to enable the Jira link.")
-
