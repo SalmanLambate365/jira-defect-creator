@@ -1156,4 +1156,4 @@ if st.button("🚀 Create Defect"):
         st.link_button("Open Defect in Jira", f"{JIRA_BASE_URL}/browse/{ik}")
     else:
         st.info("Create a defect first to enable the Jira link.")
-``
+
