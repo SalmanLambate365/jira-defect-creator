@@ -26,7 +26,8 @@ from requests.auth import HTTPBasicAuth
 # ============================================================
 JIRA_BASE_URL = "https://mandg.atlassian.net"
 PROJECT_KEY = "CT"
-ISSUE_TYPE_CANDIDATES = "Cust Tech Products"ISSUE_TYPE_CANDIDATES = ["Defect", "Bug"]
+ISSUE_TYPE_CANDIDATES = "Cust Tech Products"
+ISSUE_TYPE_CANDIDATES = ["Defect", "Bug"]
 CUST_TECH_DELIVERY_TEAM_NAME = "Cust Tech Delivery Teams"
 
 # Names for description sections pulled from the Test ticket
