@@ -169,7 +169,7 @@ def add_titlebar_branding(
     app_title: str = "🐞 AutoDefect Logger",
     app_subtitle: str | None = "",
     img = Image.open(header_image_path).convert("RGB"),
-    footer_text: str = "AutoDefect Logger • © 2026",
+    footer_text: str = "AutoDefect Logger • © 2026"
         # quick color pickers
         def _rgb_to_hex(rgb):
             r, g, b = rgb
