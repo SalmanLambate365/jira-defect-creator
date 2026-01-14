@@ -3,7 +3,11 @@
 # --------------------------------------------------------------------------------
 # Jira Defect Creator (Create defect from Test; copy fields; Zephyr integration)
 # --------------------------------------------------------------------------------
-import jsonimport base64
+
+import base64
+import hashlib
+import hmac
+import json
 import time
 import urllib.parse
 import re
@@ -16,6 +20,7 @@ import streamlit as st
 from streamlit.components.v1 import html as st_html
 import requests
 from requests.auth import HTTPBasicAuth
+
 
 # ============================================================
 # CONFIGURATION
