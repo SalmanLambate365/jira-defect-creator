@@ -176,18 +176,6 @@ def add_titlebar_branding(
     max_inner_width_px: int = 1200
 ):
     """
-    Renders title bar (teal) + full-width green divider; footer is injected elsewhere.
-    Uses components.html (iframe) for the header. CSS braces are doubled for f-string.
-    """
-    # --- Load logo (optional) & auto-pick brand colors ---
-    logo_data_url = ""
-    if Path(header_image_path).exists():
-
-st_html(html_blob, height=140, scrolling=False)
-
-+ /* Prevent any accidental clipping of the logo at the edges */
-
-    """
     Renders title bar + green divider inside an iframe and injects the footer
     outside the iframe so it stays fixed to the page bottom. Includes spacing,
     contrast, and mobile refinements.
