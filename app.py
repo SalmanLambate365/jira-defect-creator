@@ -673,30 +673,73 @@ def fail_zephyr_step(*args, **kwargs):
     raise RuntimeError("Step update disabled for this tenant. Set ENABLE_STEP_UPDATE=True only if supported.")
 
 
+
 def fail_execution_cloud(execution_obj):
     """
-    Zephyr Squad Cloud: set execution status using the bulk update endpoint.
-    Using /public/rest/api/1.0/executions (POST) with one execution id is the
-    Cloud-supported way. Status id: 2 = FAIL.
+    Zephyr Squad Cloud:
+      1) Try bulk executions endpoint (Cloud-standard) with one ID and helpful flags.
+      2) Fallback to PUT /execution/{id} with a full payload + status.
     """
     execution_id = execution_obj.get("id")
     if not execution_id:
         raise RuntimeError("Missing execution id.")
 
-    # Cloud bulk update endpoint (works for one or many executions)
-    rel = "/public/rest/api/1.0/executions"
-
-    # Minimal payload: just ids + status. Flags are optional; keep simple first.
-    body = {
-        "executions": [str(execution_id)],  # list of execution ids as strings
-        "status": 2                         # 2 = FAIL
-        # Optional flags if you ever need them:
-        # "clearDefectMappingFlag": False,
-        # "testStepStatusChangeFlag": False,
-        # "stepStatus": -1
+    # --- 1) BULK update (Cloud) ---------------------------------------------
+    # Endpoint: POST /connect/public/rest/api/1.0/executions
+    # Note: many tenants now accept only ONE id per call; include flags to be safe.
+    rel_bulk = "/public/rest/api/1.0/executions"
+    bulk_body = {
+        "executions": [str(execution_id)],  # one id only
+        "status": 2,                        # 2 = FAIL
+        # Flags some tenants now expect (harmless if ignored):
+        "clearDefectMappingFlag": False,
+        "testStepStatusChangeFlag": False,
+        "stepStatus": -1
     }
 
-    zephyr_post(rel, json_body=body)
+    try:
+        zephyr_post(rel_bulk, json_body=bulk_body)
+        return  # success
+    except Exception as bulk_err:
+        # We'll try a second method below; keep this for message context.
+        bulk_err_msg = str(bulk_err)
+
+    # --- 2) Fallback: PUT /execution/{id} with full payload + status ---------
+    # Some tenants accept status changes only via the update-execution endpoint
+    # when you supply the complete execution context.
+    project_id   = execution_obj.get("projectId")
+    test_issue_id = execution_obj.get("issueId")      # numeric id of the Test issue
+    cycle_id     = execution_obj.get("cycleId")
+    version_id   = execution_obj.get("versionId", -1)
+
+    if project_id is None or test_issue_id is None:
+        raise RuntimeError(
+            "Execution object missing required fields for fallback update "
+            f"(projectId={project_id}, issueId={test_issue_id}). "
+            "Cannot set execution status."
+        )
+
+    rel_put = f"/public/rest/api/1.0/execution/{execution_id}"
+    put_body = {
+        "id": str(execution_id),
+        "projectId": int(project_id),
+        "issueId": int(test_issue_id),
+        "cycleId": str(cycle_id) if cycle_id is not None else None,
+        "versionId": int(version_id) if version_id is not None else -1,
+        "status": {"id": 2}  # FAIL
+    }
+    put_body = {k: v for k, v in put_body.items() if v is not None}
+
+    try:
+        zephyr_put(rel_put, json_body=put_body)
+        return  # success
+    except Exception as put_err:
+        raise RuntimeError(
+            "Bulk executions update failed, and fallback PUT /execution/{id} "
+            f"also failed.\nBulk error: {bulk_err_msg}\nPUT error: {put_err}"
+        )
+``
+
 
 
 # ============================================================
