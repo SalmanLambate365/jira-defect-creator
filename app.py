@@ -768,7 +768,7 @@ st.set_page_config(page_title="Jira Defect Creator", layout="centered")
 add_titlebar_branding(
     header_image_path="mg_branding.png",  # change to "assets/mg_branding.png" if moved
     app_title="🐞 AutoDefect Logger",
-    app_subtitle="Jira Defect Creator",
+    app_subtitle="",
     footer_text="AutoDefect Logger • © 2026",
     # brand_green_hex="#00A878",  # uncomment to force exact brand colors
     # brand_teal_hex="#004D53",
