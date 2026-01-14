@@ -47,7 +47,7 @@ IMPACT_NAME           = "Impact"  # kept for fetch compatibility; not shown in U
 ZEPHYR_BASE = "https://prod-api.zephyr4jiracloud.com/connect"
 
 # Feature flags
-ENABLE_STEP_UPDATE = True  # Step-result APIs aren't exposed on all Cloud tenants
+ENABLE_STEP_UPDATE = False  # Step-result APIs aren't exposed on all Cloud tenants
 
 # Let the 'fail' transition name(s) match your Jira workflow
 JIRA_FAIL_TRANSITION_CANDIDATES = ["Failed", "Fail", "Fail Status"]
