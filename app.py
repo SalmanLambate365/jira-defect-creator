@@ -1,5 +1,5 @@
 
-# app.py
+# final_defect_logging_tool.py
 # --------------------------------------------------------------------------------
 # Jira Defect Creator (Create defect from Test; copy fields; Zephyr integration)
 # --------------------------------------------------------------------------------
@@ -21,21 +21,12 @@ from streamlit.components.v1 import html as st_html
 import requests
 from requests.auth import HTTPBasicAuth
 
-
 # ============================================================
 # CONFIGURATION
 # ============================================================
 JIRA_BASE_URL = "https://mandg.atlassian.net"
 PROJECT_KEY = "CT"
-ISSUE_TYPE_CANDIDATES = ["Defect", "Bug"]
-
-# Known single-select custom field IDs in your Jira
-TEST_PHASE_FIELD_ID = "customfield_10245"  # Test Phase
-SEVERITY_FIELD_ID   = "customfield_10260"  # Severity
-
-# Resolve these by NAME → ID at runtime (case-insensitive)
-CUST_TECH_PORTFOLIO_NAME     = "Cust Tech Portfolio"
-CUST_TECH_PRODUCT_NAME       = "Cust Tech Products"
+ISSUE_TYPE_CANDIDATES = "Cust Tech Products"ISSUE_TYPE_CANDIDATES = ["Defect", "Bug"]
 CUST_TECH_DELIVERY_TEAM_NAME = "Cust Tech Delivery Teams"
 
 # Names for description sections pulled from the Test ticket
@@ -52,17 +43,16 @@ ENABLE_STEP_UPDATE = False  # Step-result APIs aren't exposed on all Cloud tenan
 # Let the 'fail' transition name(s) match your Jira workflow
 JIRA_FAIL_TRANSITION_CANDIDATES = ["Failed", "Fail", "Fail Status"]
 
+
 # ============================================================
-# BRANDING: Title bar (logo + title), green divider, fixed footer
+# BRANDING: Title bar (logo + title), full-width green divider, fixed footer
 # ============================================================
 def _rgb_to_hex(rgb):
     r, g, b = rgb
     return f"#{r:02x}{g:02x}{b:02x}"
 
 def _dominant_palette(img: Image.Image, k: int = 8):
-    """
-    Returns a list of ((R,G,B), count) sorted by count desc using adaptive palette.
-    """
+    """Returns a list of ((R,G,B), count) sorted by count desc using adaptive palette."""
     small = img.copy().convert("RGBA").resize((160, 160))
     pixels = [px for px in small.getdata() if px[3] > 0]
     if not pixels:
@@ -89,12 +79,12 @@ def _pick_brand_colors(img: Image.Image):
 
     def green_score(rgb, count):
         h, s, v = to_hsv(rgb)
-        hue_bias = max(0.0, 1.0 - abs(h - 140) / 60.0)
+        hue_bias = max(0.0, 1.0 - abs(h - 140) / 60.0)  # favor ~140°
         return (s * 0.8 + v * 0.2) * hue_bias * (1 + count/1000.0)
 
     def teal_score(rgb, count):
         h, s, v = to_hsv(rgb)
-        hue_bias = max(0.0, 1.0 - abs(h - 180) / 70.0)
+        hue_bias = max(0.0, 1.0 - abs(h - 180) / 70.0)  # favor ~180°
         return (s * 0.6 + (1 - v) * 0.6) * hue_bias * (1 + count/1000.0)
 
     green_best, green_best_score = None, -1
@@ -113,101 +103,25 @@ def _pick_brand_colors(img: Image.Image):
         teal_best = (5, 68, 74)      # dark teal fallback
 
     return _rgb_to_hex(green_best), _rgb_to_hex(teal_best)
-from streamlit.components.v1 import html as st_html
-import base64, io
-from pathlib import Path
-from PIL import Image
-import colorsys
-def _rgb_to_hex(rgb):
-    r, g, b = rgb
-    return f"#{r:02x}{g:02x}{b:02x}"
-def _dominant_palette(img: Image.Image, k: int = 8):
-    small = img.copy().convert("RGBA").resize((160, 160))
-    pixels = [px for px in small.getdata() if px[3] > 0]
-    if not pixels:
-        return [((22, 163, 74), 1)]
-    pal_img = small.convert("P", palette=Image.ADAPTIVE, colors=k)
-    palette = pal_img.getpalette()[:k * 3]
-    color_counts = pal_img.getcolors() or []
-    def idx_to_rgb(i):
-        base = i * 3
-        return (palette[base], palette[base+1], palette[base+2])
-    colors = [(idx_to_rgb(i), c) for (c, i) in color_counts]
-    colors.sort(key=lambda x: x[1], reverse=True)
-    return colors
-def _pick_brand_colors(img: Image.Image):
-    def to_hsv(rgb):
-        r, g, b = [v/255 for v in rgb]
-        h, s, v = colorsys.rgb_to_hsv(r, g, b)
-        return (h*360.0, s, v)
-    colors = _dominant_palette(img, k=8)
-    def green_score(rgb, count):
-        h, s, v = to_hsv(rgb)
-        return (s*0.8 + v*0.2) * max(0.0, 1.0 - abs(h - 140)/60.0) * (1 + count/1000.0)
-    def teal_score(rgb, count):
-        h, s, v = to_hsv(rgb)
-        return (s*0.6 + (1 - v)*0.6) * max(0.0, 1.0 - abs(h - 180)/70.0) * (1 + count/1000.0)
-    green_best, gs_best = None, -1
-    teal_best, ts_best   = None, -1
-    for rgb, cnt in colors:
-        gs = green_score(rgb, cnt)
-        ts = teal_score(rgb, cnt)
-        if gs > gs_best: green_best, gs_best = rgb, gs
-        if ts > ts_best: teal_best, ts_best = rgb, ts
-    if not green_best: green_best = (22, 163, 74)  # #16A34A
-    if not teal_best:  teal_best  = (5, 68, 74)
-    return _rgb_to_hex(green_best), _rgb_to_hex(teal_best)
-    
-from streamlit.components.v1 import html as st_html
-import base64, io
-from pathlib import Path
-from PIL import Image
-import colorsys
 
 def add_titlebar_branding(
     header_image_path: str,
     app_title: str = "🐞 AutoDefect Logger",
-    app_subtitle: str | None = "",
-    img = Image.open(header_image_path).convert("RGB"),
-    footer_text: str = "AutoDefect Logger • © 2026"
-        # quick color pickers
-        def _rgb_to_hex(rgb):
-            r, g, b = rgb
-            return f"#{r:02x}{g:02x}{b:02x}"
-        def _dominant_palette(imgPIL, k=8):
-            small = imgPIL.copy().convert("RGBA").resize((160, 160))
-            pixels = [px for px in small.getdata() if px[3] > 0]
-            if not pixels:
-                return [((22, 163, 74), 1)]
-            pal_img = small.convert("P", palette=Image.ADAPTIVE, colors=k)
-            palette = pal_img.getpalette()[:k * 3]
-            color_counts = pal_img.getcolors() or []
-            def idx_to_rgb(i):
-                base = i * 3
-                return (palette[base], palette[base+1], palette[base+2])
-            colors = [(idx_to_rgb(i), c) for (c, i) in color_counts]
-            colors.sort(key=lambda x: x[1], reverse=True)
-            return colors
-        def _pick_brand_colors(imgPIL):
-            cols = _dominant_palette(imgPIL, k=8)
-            def to_hsv(rgb):
-                r, g, b = [v/255 for v in rgb]
-                h, s, v = colorsys.rgb_to_hsv(r, g, b)
-                return (h*360.0, s, v)
-            green_best, gscore = None, -1
-            teal_best,  tscore = None, -1
-            for rgb, cnt in cols:
-                h, s, v = to_hsv(rgb)
-                g_bias = max(0.0, 1.0 - abs(h - 140)/60.0)
-                t_bias = max(0.0, 1.0 - abs(h - 180)/70.0)
-                gs = (s*0.8 + v*0.2) * g_bias * (1 + cnt/1000.0)
-                ts = (s*0.6 + (1 - v)*0.6) * t_bias * (1 + cnt/1000.0)
-                if gs > gscore: green_best, gscore = rgb, gs
-                if ts > tscore: teal_best,  tscore = rgb, ts
-            if not green_best: green_best = (22, 163, 74)
-            if not teal_best:  teal_best  = (5, 68, 74)
-            return _rgb_to_hex(green_best), _rgb_to_hex(teal_best)
-
+    app_subtitle: str | None = "Jira Defect Creator",
+    footer_text: str = "AutoDefect Logger • © 2026",
+    brand_green_hex: str | None = None,
+    brand_teal_hex: str | None = None,
+    logo_height_px: int = 56,
+    logo_side: str = "right",
+):
+    """
+    Renders title bar (teal) + full-width green divider; footer is injected
+    outside the iframe so it stays fixed to the page bottom.
+    """
+    # Compute brand colors + base64 image URL
+    logo_data_url = ""
+    if Path(header_image_path).exists():
+        img = Image.open(header_image_path).convert("RGB")
         auto_green, auto_teal = _pick_brand_colors(img)
         brand_green = brand_green_hex or auto_green
         brand_teal  = brand_teal_hex  or auto_teal
@@ -218,15 +132,17 @@ def add_titlebar_branding(
     else:
         brand_green = brand_green_hex or "#16A34A"
         brand_teal  = brand_teal_hex  or "#0f5b5f"
+        logo_data_url = ""
 
-    # --- Build left/right inner blocks ---
     title_html = f"""
       <div class="mg-title">
         <div class="mg-title-line">{app_title}</div>
         {f"<div class='mg-subtitle'>{app_subtitle}</div>" if app_subtitle else ""}
       </div>
     """
+
     logo_html = f'{logo_data_url}' if logo_data_url else ""
+
     if logo_side.lower() == "left":
         left_html  = f"<div class='mg-logo-wrap'>{logo_html}</div>"
         right_html = f"<div class='mg-title-wrap'>{title_html}</div>"
@@ -234,7 +150,7 @@ def add_titlebar_branding(
         left_html  = f"<div class='mg-title-wrap'>{title_html}</div>"
         right_html = f"<div class='mg-logo-wrap'>{logo_html}</div>"
 
-    # --- CSS + HTML (note doubled braces for CSS in f-string) ---
+    # ---- Header CSS/HTML (doubled braces for f-string CSS) ----
     html_blob = f"""
       <style>
         :root {{
@@ -315,151 +231,20 @@ def add_titlebar_branding(
     """
     st_html(html_blob, height=140, scrolling=False)
 
-    # IMPORTANT: footer is injected outside the iframe elsewhere (don’t put it here)
-    # Add small spacer below header if needed:
-    # st.markdown("<div style='height: 8px'></div>", unsafe_allow_html=True)
-    brand_green_hex: str | None = None,
-    brand_teal_hex: str | None = None,
-    logo_height_px: int = 56,
-    logo_side: str = "right",
-    max_inner_width_px: int = 1200
-):
-    """
-    Renders title bar (teal) + full-width green divider; footer is injected elsewhere.
-    Uses components.html (iframe) for the header. CSS braces are doubled for f-string.
-    """
-    # --- Load logo (optional) & auto-pick brand colors ---
-    logo_data_url = ""
-    if Path(header_image_path).exists():
-
-st_html(html_blob, height=140, scrolling=False)
-
-+ /* Prevent any accidental clipping of the logo at the edges */
-
-    """
-    Renders title bar + green divider inside an iframe and injects the footer
-    outside the iframe so it stays fixed to the page bottom. Includes spacing,
-    contrast, and mobile refinements.
-    """
-    # Compute brand colors + base64 image URL
-    logo_data_url = ""
-    if Path(header_image_path).exists():
-        img = Image.open(header_image_path).convert("RGB")
-        auto_green, auto_teal = _pick_brand_colors(img)
-        brand_green = brand_green_hex or auto_green
-        brand_teal  = brand_teal_hex  or auto_teal
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode()
-        logo_data_url = f"data:image/png;base64,{b64}"
-    else:
-        brand_green = brand_green_hex or "#16A34A"
-        brand_teal  = brand_teal_hex  or "#0f5b5f"
-        logo_data_url = ""
-
-    title_html = f"""
-      <div class="mg-title">
-        <div class="mg-title-line">{app_title}</div>
-        {f"<div class='mg-subtitle'>{app_subtitle}</div>" if app_subtitle else ""}
-      </div>
-    """
-
-    # Layout: two fixed regions to ensure no base64 prints as text
-    if logo_side.lower() == "left":
-        left_html  = f"<div class='mg-logo-wrap'>{f'<img class=\"mg-logo\" src=\"{logo_data_url}\" alt=\"M&G Logo\" />' if logo_data_url else ''}</div>"
-        right_html = f"<div class='mg-title-wrap'>{title_html}</div>"
-    else:
-        left_html  = f"<div class='mg-title-wrap'>{title_html}</div>"
-        right_html = f"<div class='mg-logo-wrap'>{f'<img class=\"mg-logo\" src=\"{logo_data_url}\" alt=\"M&G Logo\" />' if logo_data_url else ''}</div>"
-
-    # ---- TOP BAR + DIVIDER in iframe ----
-    html_blob = f"""
-      <style>
-        :root {{
-          --brand-green: {brand_green};
-          --brand-teal:  {brand_teal};
-          --title-fg:    #ffffff;
-          --subtitle-fg: #e2e8f0;
-        }}
-
-        .mg-topbar-wrap {{
-          width: 100%;
-          background-color: var(--brand-teal);
-          margin: 0;
-          padding: 0;
-        }}
-        .mg-topbar {{
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-          max-width: {max_inner_width_px}px;  /* toggle 100% for full-width bar */
-          margin: 0 auto;
-          padding: 10px 14px;
-        }}
-
-        .mg-title-wrap, .mg-logo-wrap {{ display:flex; align-items:center; }}
-        .mg-title {{ display:flex; flex-direction:column; gap:2px; }}
-
-        .mg-title-line {{
-          color: var(--title-fg);
-          font-weight: 700;
-          font-size: 1.25rem;
-          line-height: 1.2;
-          letter-spacing: 0.2px;
-          text-shadow: 0 1px 0 rgba(0,0,0,.25);
-        }}
-        .mg-subtitle {{
-          color: var(--subtitle-fg);
-          font-weight: 500;
-          font-size: 0.95rem;
-          line-height: 1.2;
-        }}
-
-        .mg-logo {{
-          height: {logo_height_px}px;
-          width: auto;
-          display: block;
-          border-radius: 6px;
-        }}
-
-        /* Divider: refined spacing & alignment to inner width */
-        .green-line {{
-          height: 4px;
-          background-color: var(--brand-green);
-          border: none;
-          margin: 0.4rem auto 0.9rem auto;
-          max-width: {max_inner_width_px}px;      /* toggle 100% for full-width divider */
-        }}
-
-      </style>
-
-      <div class="mg-topbar-wrap">
-        <div class="mg-topbar">
-          {left_html}
-          {right_html}
-        </div>
-      </div>
-      <div class="green-line"></div>
-    """
-    st_html(html_blob, height=140, scrolling=False)
-
-    # ---- FOOTER in main page DOM (fixed to viewport bottom) + global spacing refinements ----
+    # ---- Footer in main DOM (fixed bottom) + global spacing ----
     st.markdown(f"""
         <style>
-            /* Global: slightly tighter top padding; ensure bottom space for footer */
             .block-container {{
                 padding-top: 0.8rem;
                 padding-bottom: 96px;
             }}
-            /* Footer: add right padding to avoid Streamlit Cloud's floating bubble */
             .footer-fixed {{
                 position: fixed;
                 left: 0; right: 0; bottom: 0;
                 width: 100%;
                 background: #ffffff;
                 border-top: 4px solid {brand_green};
-                padding: 8px 72px 8px 16px;
+                padding: 8px 72px 8px 16px;  /* right padding for Streamlit Cloud controls */
                 font-size: 0.9rem;
                 color: #334155;
                 z-index: 9999;
@@ -468,6 +253,7 @@ st_html(html_blob, height=140, scrolling=False)
         </style>
         <div class="footer-fixed">{footer_text}</div>
     """, unsafe_allow_html=True)
+
 
 # ============================================================
 # BASIC HELPERS (AUTH / JIRA COMMON)
@@ -512,6 +298,7 @@ def get_field_id_by_name(field_name, auth):
                 return fid
     return None
 
+
 # ============================================================
 # ZEPHYR (JWT + HELPERS) — Cloud
 # ============================================================
@@ -530,10 +317,12 @@ def build_zephyr_jwt(method, relative_path, query_params=None, expires_in=360):
         "iat": now
     }
     header = {"typ": "JWT", "alg": "HS256"}
+
     def b64(obj):
         return base64.urlsafe_b64encode(
             json.dumps(obj, separators=(",", ":")).encode()
         ).rstrip(b"=")
+
     signing_input = b".".join([b64(header), b64(payload)])
     signature = base64.urlsafe_b64encode(
         hmac.new(st.secrets["ZEPHYR_SECRET_KEY"].encode(), signing_input, hashlib.sha256).digest()
@@ -569,6 +358,7 @@ def zephyr_post(relative_path, json_body=None, query_params=None):
 
 def zephyr_put(relative_path, json_body=None, query_params=None):
     return zephyr_request("PUT", relative_path, query_params=query_params, json_body=json_body)
+
 
 # ============================================================
 # FETCH FIELDS FROM TEST TICKET → TEMP STORE
@@ -664,6 +454,7 @@ def fetch_test_ticket_fields_and_text(test_key, auth):
 
     return result
 
+
 # ============================================================
 # ADF HELPERS
 # ============================================================
@@ -718,6 +509,7 @@ def adf_paragraph_with_bold_quotes(line: str):
             buf += p
     if buf: segments.append((buf, False))
     return adf_paragraph_segments(segments)
+
 
 # ============================================================
 # AI-LITE HELPERS
@@ -807,11 +599,12 @@ def make_adf_from_ai(test_key, ai, evidence_names):
 
     return {"type": "doc", "version": 1, "content": content}
 
+
 # ============================================================
 # ZEPHYR: EXECUTION SEARCH, LINK DEFECT, FAIL EXECUTION
 # ============================================================
 def get_zephyr_steps_and_expected(jira_test_key, auth):
-    # Optional: not used in the new linking flow; kept for AI draft
+    """Optional (kept for AI draft)."""
     issue_id = jira_issue_id_from_key(jira_test_key, auth)
     project_id = jira_project_id_from_key(PROJECT_KEY, auth)
     rel = f"/public/rest/api/1.0/teststep/{issue_id}"
@@ -836,7 +629,7 @@ def find_latest_execution(jira_test_key, auth):
         data = zephyr_get(rel, query_params=params)
         execs = data.get("executions") or []
         if execs:
-            # Return latest full execution object, and attach projectId for update payload
+            # Return latest full execution object
             return execs[0].get("execution", {}) | {"projectId": project_id}
     except Exception as e:
         st.warning(f"Executions API failed: {e}")
@@ -877,29 +670,11 @@ def link_defect_to_execution_cloud(execution_obj, defect_issue_key, auth):
         "issueId": int(test_issue_id),
         "cycleId": str(cycle_id) if cycle_id is not None else None,
         "versionId": version_id if version_id is not None else -1,
-        # IMPORTANT: defects must be numeric Jira ids, not keys like "CT-123"
-        "defects": [int(defect_issue_id)],
+        "defects": [int(defect_issue_id)],  # IMPORTANT: numeric Jira IDs
         "updateDefectList": True
     }
     body = {k: v for k, v in body.items() if v is not None}
     return zephyr_put(rel, json_body=body)
-
-
-def fail_zephyr_step(execution_id, failed_step_num):
-    rel_steps = f"/public/rest/api/1.0/execution/{execution_id}/steps"
-    steps = zephyr_get(rel_steps)
-    if not isinstance(steps, list) or not steps:
-        raise RuntimeError("No step results returned for this execution.")
-    steps_sorted = sorted(steps, key=lambda x: x.get("orderId", 0))
-    idx = max(1, int(failed_step_num)) - 1
-    if idx >= len(steps_sorted):
-        idx = len(steps_sorted) - 1
-    step_res_id = steps_sorted[idx].get("id") or steps_sorted[idx].get("stepResultId")
-    if not step_res_id:
-        raise RuntimeError("Couldn't resolve stepResultId.")
-    rel_update = f"/public/rest/api/1.0/execution/{execution_id}/stepResult/{step_res_id}"
-    zephyr_put(rel_update, json_body={"status": {"id": 2}})  # 2 = Fail
-
 
 def fail_execution_cloud(execution_obj):
     """
@@ -911,39 +686,31 @@ def fail_execution_cloud(execution_obj):
     if not execution_id:
         raise RuntimeError("Missing execution id.")
 
-    # --- 1) BULK update (Cloud) ---------------------------------------------
-    # Endpoint: POST /connect/public/rest/api/1.0/executions
-    # Note: many tenants now accept only ONE id per call; include flags to be safe.
+    # 1) Bulk update (Cloud): POST /public/rest/api/1.0/executions
     rel_bulk = "/public/rest/api/1.0/executions"
     bulk_body = {
         "executions": [str(execution_id)],  # one id only
         "status": 2,                        # 2 = FAIL
-        # Flags some tenants now expect (harmless if ignored):
         "clearDefectMappingFlag": False,
         "testStepStatusChangeFlag": False,
         "stepStatus": -1
     }
-
     try:
         zephyr_post(rel_bulk, json_body=bulk_body)
-        return  # success
+        return
     except Exception as bulk_err:
-        # We'll try a second method below; keep this for message context.
         bulk_err_msg = str(bulk_err)
 
-    # --- 2) Fallback: PUT /execution/{id} with full payload + status ---------
-    # Some tenants accept status changes only via the update-execution endpoint
-    # when you supply the complete execution context.
+    # 2) Fallback: PUT /execution/{id} with full payload + status
     project_id   = execution_obj.get("projectId")
-    test_issue_id = execution_obj.get("issueId")      # numeric id of the Test issue
+    test_issue_id = execution_obj.get("issueId")
     cycle_id     = execution_obj.get("cycleId")
     version_id   = execution_obj.get("versionId", -1)
 
     if project_id is None or test_issue_id is None:
         raise RuntimeError(
             "Execution object missing required fields for fallback update "
-            f"(projectId={project_id}, issueId={test_issue_id}). "
-            "Cannot set execution status."
+            f"(projectId={project_id}, issueId={test_issue_id}). Cannot set execution status."
         )
 
     rel_put = f"/public/rest/api/1.0/execution/{execution_id}"
@@ -956,14 +723,13 @@ def fail_execution_cloud(execution_obj):
         "status": {"id": 2}  # FAIL
     }
     put_body = {k: v for k, v in put_body.items() if v is not None}
-
     try:
         zephyr_put(rel_put, json_body=put_body)
-        return  # success
+        return
     except Exception as put_err:
         raise RuntimeError(
-            "Bulk executions update failed, and fallback PUT /execution/{id} "
-            f"also failed.\nBulk error: {bulk_err_msg}\nPUT error: {put_err}"
+            "Bulk executions update failed, and fallback PUT /execution/{id} also failed.\n"
+            f"Bulk error: {bulk_err_msg}\nPUT error: {put_err}"
         )
 
 
@@ -1019,12 +785,13 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
         return False, f"Failed to set Epic Link: {r4.status_code} {r4.text[:300]}"
     return False, "Epic Link field not available on this project."
 
+
 # ============================================================
 # STREAMLIT UI
 # ============================================================
 st.set_page_config(page_title="Jira Defect Creator", layout="centered")
 
-# --- Title bar (logo + title), green divider, fixed footer with refinements ---
+# --- Title bar (logo + title), full-width green divider, fixed footer ---
 add_titlebar_branding(
     header_image_path="mg_branding.png",  # change to "assets/mg_branding.png" if moved
     app_title="🐞 AutoDefect Logger",
@@ -1034,7 +801,6 @@ add_titlebar_branding(
     # brand_teal_hex="#004D53",
     logo_side="right",
     logo_height_px=56,
-    max_inner_width_px=1200
 )
 
 st.markdown("**Fields marked with * are mandatory**")
@@ -1045,6 +811,7 @@ severity         = st.selectbox("Severity *", ["Sev-1", "Sev-2", "Sev-3", "Sev-4
 priority         = st.selectbox("Priority *", ["Critical", "Major", "Medium", "Minor"])
 test_phase       = st.selectbox("Test Phase *", ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"])
 uploaded_files   = st.file_uploader("📎 Attach Evidence (screenshots, logs)", accept_multiple_files=True)
+
 
 # ============================================================
 # AI-LITE GENERATION
@@ -1105,6 +872,7 @@ if use_ai and "ai_out" in st.session_state:
     ai["expected_results"]   = st.text_area("Expected Results", ai.get("expected_results", ""), height=100)
     ai["actual_results"]     = st.text_area("Actual Results", ai.get("actual_results", ""), height=100)
 
+
 # ============================================================
 # SUMMARY HELPER & TRANSITION
 # ============================================================
@@ -1149,6 +917,7 @@ def transition_issue_to_failed(issue_key, auth):
         st.warning(f"Failed to update Test ticket status: {resp.status_code} {resp.text[:300]}")
         return False
     return True
+
 
 # ============================================================
 # CREATE DEFECT
@@ -1352,15 +1121,13 @@ if st.button("🚀 Create Defect"):
             except Exception as e:
                 st.warning(f"Failed to link defect to Zephyr execution: {e}")
 
-            # Step update (disabled by default)
-            try:
-                if ENABLE_STEP_UPDATE:
-                    fail_zephyr_step(execution_obj.get('id'), failed_step_num)
-                    st.success("❗ Failed step updated in Zephyr.")
-                else:
-                    st.info("Step update skipped (ENABLE_STEP_UPDATE = False).")
-            except Exception as e:
-                st.warning(f"Could not update Zephyr failed step: {e}")
+            # Step update (disabled by default) – no banner if disabled
+            if ENABLE_STEP_UPDATE:
+                try:
+                    # If you ever enable this, plug in your tenant’s supported step API
+                    st.info("Step update path not enabled for this tenant.")
+                except Exception as e:
+                    st.warning(f"Could not update Zephyr failed step: {e}")
 
             try:
                 fail_execution_cloud(execution_obj)
@@ -1377,5 +1144,10 @@ if st.button("🚀 Create Defect"):
     else:
         st.info("Create a defect first to enable the Jira link.")
 
-import hashlib
-import hmac
+
+# Known single-select custom field IDs in your Jira
+TEST_PHASE_FIELD_ID = "customfield_10245"  # Test Phase
+SEVERITY_FIELD_ID   = "customfield_10260"  # Severity
+
+# Resolve these by NAME → ID at runtime (case-insensitive)
+CUST_TECH_PORTFOLIO_NAME     = "Cust Tech Portfolio"
