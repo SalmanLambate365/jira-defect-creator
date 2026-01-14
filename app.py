@@ -47,7 +47,7 @@ IMPACT_NAME           = "Impact"  # kept for fetch compatibility; not shown in U
 ZEPHYR_BASE = "https://prod-api.zephyr4jiracloud.com/connect"
 
 # Feature flags
-ENABLE_STEP_UPDATE = False  # Step-result APIs aren't exposed on all Cloud tenants
+ENABLE_STEP_UPDATE = True  # Step-result APIs aren't exposed on all Cloud tenants
 
 # Let the 'fail' transition name(s) match your Jira workflow
 JIRA_FAIL_TRANSITION_CANDIDATES = ["Failed", "Fail", "Fail Status"]
@@ -668,9 +668,23 @@ def link_defect_to_execution_cloud(execution_obj, defect_issue_key, auth):
     body = {k: v for k, v in body.items() if v is not None}
     return zephyr_put(rel, json_body=body)
 
-def fail_zephyr_step(*args, **kwargs):
-    # Step-result endpoints are not consistently exposed on Squad Cloud tenants.
-    raise RuntimeError("Step update disabled for this tenant. Set ENABLE_STEP_UPDATE=True only if supported.")
+
+def fail_zephyr_step(execution_id, failed_step_num):
+    rel_steps = f"/public/rest/api/1.0/execution/{execution_id}/steps"
+    steps = zephyr_get(rel_steps)
+    if not isinstance(steps, list) or not steps:
+        raise RuntimeError("No step results returned for this execution.")
+    steps_sorted = sorted(steps, key=lambda x: x.get("orderId", 0))
+    idx = max(1, int(failed_step_num)) - 1
+    if idx >= len(steps_sorted):
+        idx = len(steps_sorted) - 1
+    step_res_id = steps_sorted[idx].get("id") or steps_sorted[idx].get("stepResultId")
+    if not step_res_id:
+        raise RuntimeError("Couldn't resolve stepResultId.")
+    rel_update = f"/public/rest/api/1.0/execution/{execution_id}/stepResult/{step_res_id}"
+    zephyr_put(rel_update, json_body={"status": {"id": 2}})  # 2 = Fail
+``
+
 
 
 
