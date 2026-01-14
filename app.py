@@ -683,9 +683,6 @@ def fail_zephyr_step(execution_id, failed_step_num):
         raise RuntimeError("Couldn't resolve stepResultId.")
     rel_update = f"/public/rest/api/1.0/execution/{execution_id}/stepResult/{step_res_id}"
     zephyr_put(rel_update, json_body={"status": {"id": 2}})  # 2 = Fail
-``
-
-
 
 
 def fail_execution_cloud(execution_obj):
