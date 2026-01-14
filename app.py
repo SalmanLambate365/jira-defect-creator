@@ -60,6 +60,9 @@ def _rgb_to_hex(rgb):
     return f"#{r:02x}{g:02x}{b:02x}"
 
 def _dominant_palette(img: Image.Image, k: int = 8):
+    """
+    Returns a list of ((R,G,B), count) sorted by count desc using adaptive palette.
+    """
     small = img.copy().convert("RGBA").resize((160, 160))
     pixels = [px for px in small.getdata() if px[3] > 0]
     if not pixels:
@@ -515,6 +518,14 @@ def normalize_step(s):
     return s
 
 def ai_lite_draft(context):
+    """
+    Produce cleaner, business‑focused content:
+    - Summary: from failed step + phase
+    - Issue Description: concise impact statement
+    - Steps: keep, but mark failed
+    - Expected: generic acceptance of selection
+    - Actual: concise failure + evidence note
+    """
     raw_steps = context.get("zephyr_steps") or []
     zephyr_expected = context.get("zephyr_expected") or []
     steps = [normalize_step(x) for x in raw_steps if x and x.strip()]
