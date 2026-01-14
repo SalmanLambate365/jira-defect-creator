@@ -676,36 +676,36 @@ def make_adf_from_ai(test_key, ai, evidence_names):
     return {"type": "doc", "version": 1, "content": content}
 
 # ============================================================
-# ZEPHYR: STEPS/EXPECTED, EXECUTION SEARCH, STEP FAIL, LINK DEFECT, FAIL EXECUTION
+# ZEPHYR: EXECUTION SEARCH, LINK DEFECT, FAIL EXECUTION
 # ============================================================
 def get_zephyr_steps_and_expected(jira_test_key, auth):
+    # Optional: not used in the new linking flow; kept for AI draft
     issue_id = jira_issue_id_from_key(jira_test_key, auth)
     project_id = jira_project_id_from_key(PROJECT_KEY, auth)
     rel = f"/public/rest/api/1.0/teststep/{issue_id}"
-    rows = zephyr_get(rel, query_params={"projectId": project_id})
+    try:
+        rows = zephyr_get(rel, query_params={"projectId": project_id})
+    except Exception:
+        return [], []
     steps, expected = [], []
     for s in sorted(rows, key=lambda x: x.get("orderId", 0)):
         step_txt = (s.get("step") or "").strip()
         exp_txt  = (s.get("result") or "").strip()
-        if step_txt:
-            steps.append(step_txt)
-        if exp_txt:
-            expected.append(exp_txt)
+        if step_txt: steps.append(step_txt)
+        if exp_txt:  expected.append(exp_txt)
     return steps, expected
 
-def find_latest_execution_id(jira_test_key, auth):
+def find_latest_execution(jira_test_key, auth):
     issue_id = jira_issue_id_from_key(jira_test_key, auth)
     project_id = jira_project_id_from_key(PROJECT_KEY, auth)
     try:
         rel = "/public/rest/api/1.0/executions"
         params = {"issueId": issue_id, "projectId": project_id, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
-        # st.write("DEBUG: Executions API response:", data)  # optional
         execs = data.get("executions") or []
         if execs:
-            exec_ids = [e.get("execution", {}).get("id") for e in execs if e.get("execution")]
-            if exec_ids:
-                return exec_ids[0]  # latest
+            # Return latest full execution object, and attach projectId for update payload
+            return execs[0].get("execution", {}) | {"projectId": project_id}
     except Exception as e:
         st.warning(f"Executions API failed: {e}")
     # Fallback: ZQL search
@@ -714,24 +714,46 @@ def find_latest_execution_id(jira_test_key, auth):
         zql = f'issue = "{jira_test_key}" ORDER BY executionDate DESC'
         params = {"zqlQuery": zql, "maxRecords": 50, "offset": 0}
         data = zephyr_get(rel, query_params=params)
-        # st.write("DEBUG: ZQL API response:", data)  # optional
         execs = (data.get("searchResult") or {}).get("executions") or []
         if execs:
-            exec_ids = [e.get("execution", {}).get("id") for e in execs if e.get("execution")]
-            if exec_ids:
-                return exec_ids[0]
+            return execs[0].get("execution", {}) | {"projectId": project_id}
     except Exception as e:
         st.warning(f"ZQL API failed: {e}")
     return None
 
-def link_defect_to_execution(execution_id, defect_issue_key, auth):
-    defect_issue_id = jira_issue_id_from_key(defect_issue_key, auth)
-    rel = f"/public/rest/api/1.0/execution/{execution_id}/defects"
-    body = {"issueId": defect_issue_id}
-    return zephyr_post(rel, json_body=body)
+def link_defect_to_execution_cloud(execution_obj, defect_issue_key, auth):
+    """
+    Zephyr Cloud: link defects by updating the execution (PUT /execution/{id})
+    with full context and 'defects' as a list of numeric Jira issue IDs.
+    """
+    execution_id = execution_obj.get("id")
+    if not execution_id:
+        raise RuntimeError("Missing execution id.")
+    project_id = execution_obj.get("projectId")
+    cycle_id   = execution_obj.get("cycleId")
+    version_id = execution_obj.get("versionId", -1)
+    test_issue_id = execution_obj.get("issueId")
+    if test_issue_id is None:
+        raise RuntimeError("Execution object missing issueId (Test id).")
+
+    defect_issue_id = jira_issue_id_from_key(defect_issue_key, auth)  # numeric id of the Defect
+
+    rel = f"/public/rest/api/1.0/execution/{execution_id}"
+    body = {
+        "id": str(execution_id),
+        "projectId": project_id,
+        "issueId": int(test_issue_id),
+        "cycleId": str(cycle_id) if cycle_id is not None else None,
+        "versionId": version_id if version_id is not None else -1,
+        # IMPORTANT: defects must be numeric Jira ids, not keys like "CT-123"
+        "defects": [int(defect_issue_id)],
+        "updateDefectList": True
+    }
+    body = {k: v for k, v in body.items() if v is not None}
+    return zephyr_put(rel, json_body=body)
+
 
 def fail_zephyr_step(execution_id, failed_step_num):
-    # Fetch step results for execution (if supported)
     rel_steps = f"/public/rest/api/1.0/execution/{execution_id}/steps"
     steps = zephyr_get(rel_steps)
     if not isinstance(steps, list) or not steps:
@@ -740,17 +762,78 @@ def fail_zephyr_step(execution_id, failed_step_num):
     idx = max(1, int(failed_step_num)) - 1
     if idx >= len(steps_sorted):
         idx = len(steps_sorted) - 1
-    step_result_id = steps_sorted[idx].get("id") or steps_sorted[idx].get("stepResultId")
-    if not step_result_id:
-        raise RuntimeError("Couldn't resolve stepResultId from Zephyr response.")
-    rel_update = f"/public/rest/api/1.0/execution/{execution_id}/stepResult/{step_result_id}"
-    body = {"status": {"id": 2}}  # 2 = Fail
-    zephyr_put(rel_update, json_body=body)
+    step_res_id = steps_sorted[idx].get("id") or steps_sorted[idx].get("stepResultId")
+    if not step_res_id:
+        raise RuntimeError("Couldn't resolve stepResultId.")
+    rel_update = f"/public/rest/api/1.0/execution/{execution_id}/stepResult/{step_res_id}"
+    zephyr_put(rel_update, json_body={"status": {"id": 2}})  # 2 = Fail
 
-def fail_execution(execution_id):
-    rel = f"/public/rest/api/1.0/execution/{execution_id}"
-    body = {"status": {"id": 2}}  # 2 = Fail
-    zephyr_put(rel, json_body=body)
+
+def fail_execution_cloud(execution_obj):
+    """
+    Zephyr Squad Cloud:
+      1) Try bulk executions endpoint (Cloud-standard) with one ID and helpful flags.
+      2) Fallback to PUT /execution/{id} with a full payload + status.
+    """
+    execution_id = execution_obj.get("id")
+    if not execution_id:
+        raise RuntimeError("Missing execution id.")
+
+    # --- 1) BULK update (Cloud) ---------------------------------------------
+    # Endpoint: POST /connect/public/rest/api/1.0/executions
+    # Note: many tenants now accept only ONE id per call; include flags to be safe.
+    rel_bulk = "/public/rest/api/1.0/executions"
+    bulk_body = {
+        "executions": [str(execution_id)],  # one id only
+        "status": 2,                        # 2 = FAIL
+        # Flags some tenants now expect (harmless if ignored):
+        "clearDefectMappingFlag": False,
+        "testStepStatusChangeFlag": False,
+        "stepStatus": -1
+    }
+
+    try:
+        zephyr_post(rel_bulk, json_body=bulk_body)
+        return  # success
+    except Exception as bulk_err:
+        # We'll try a second method below; keep this for message context.
+        bulk_err_msg = str(bulk_err)
+
+    # --- 2) Fallback: PUT /execution/{id} with full payload + status ---------
+    # Some tenants accept status changes only via the update-execution endpoint
+    # when you supply the complete execution context.
+    project_id   = execution_obj.get("projectId")
+    test_issue_id = execution_obj.get("issueId")      # numeric id of the Test issue
+    cycle_id     = execution_obj.get("cycleId")
+    version_id   = execution_obj.get("versionId", -1)
+
+    if project_id is None or test_issue_id is None:
+        raise RuntimeError(
+            "Execution object missing required fields for fallback update "
+            f"(projectId={project_id}, issueId={test_issue_id}). "
+            "Cannot set execution status."
+        )
+
+    rel_put = f"/public/rest/api/1.0/execution/{execution_id}"
+    put_body = {
+        "id": str(execution_id),
+        "projectId": int(project_id),
+        "issueId": int(test_issue_id),
+        "cycleId": str(cycle_id) if cycle_id is not None else None,
+        "versionId": int(version_id) if version_id is not None else -1,
+        "status": {"id": 2}  # FAIL
+    }
+    put_body = {k: v for k, v in put_body.items() if v is not None}
+
+    try:
+        zephyr_put(rel_put, json_body=put_body)
+        return  # success
+    except Exception as put_err:
+        raise RuntimeError(
+            "Bulk executions update failed, and fallback PUT /execution/{id} "
+            f"also failed.\nBulk error: {bulk_err_msg}\nPUT error: {put_err}"
+        )
+
 
 # ============================================================
 # EPIC LINKING (Parent/Epic)
@@ -759,7 +842,6 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
     story_key = test_fetch.get("linked_story_key")
     if not story_key:
         return False, "No linked Story found on Test ticket."
-    # Fetch Story to discover Epic
     url_story = f"{JIRA_BASE_URL}/rest/api/3/issue/{story_key}"
     r = requests.get(url_story, params={"fields": "parent"}, headers={"Accept":"application/json"}, auth=auth, timeout=30)
     r.raise_for_status()
@@ -768,7 +850,6 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
     if fields.get("parent", {}).get("key"):
         epic_key = fields["parent"]["key"]
     else:
-        # fallback: use 'Epic Link' custom field if available
         epic_link_fid = get_field_id_by_name("Epic Link", auth)
         if epic_link_fid:
             r2 = requests.get(url_story, params={"fields": epic_link_fid}, headers={"Accept":"application/json"}, auth=auth, timeout=30)
@@ -780,7 +861,6 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
                 epic_key = el
     if not epic_key:
         return False, "No Epic found for linked Story."
-    # First attempt: set 'parent' to Epic
     try:
         r3 = requests.put(
             f"{JIRA_BASE_URL}/rest/api/3/issue/{defect_key}",
@@ -793,7 +873,6 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
             return True, f"Parent set to Epic {epic_key}."
     except Exception:
         pass
-    # Fallback: try 'Epic Link' field edit
     epic_link_fid = get_field_id_by_name("Epic Link", auth)
     if epic_link_fid:
         r4 = requests.put(
@@ -813,24 +892,23 @@ def try_set_defect_parent_to_epic(defect_key, test_fetch, auth):
 # ============================================================
 st.set_page_config(page_title="Jira Defect Creator", layout="centered")
 
-# --- NEW: Title bar (logo + title), green divider, fixed footer ---
+# --- Title bar (logo + title), green divider, fixed footer with refinements ---
 add_titlebar_branding(
     header_image_path="mg_branding.png",  # change to "assets/mg_branding.png" if moved
     app_title="🐞 AutoDefect Logger",
-    app_subtitle="",
+    app_subtitle="Jira Defect Creator",
     footer_text="AutoDefect Logger • © 2026",
-    # brand_green_hex="#00A878",  # uncomment to force exact brand colors
+    # brand_green_hex="#00A878",   # uncomment to force exact brand colors
     # brand_teal_hex="#004D53",
     logo_side="right",
-    logo_height_px=48,
+    logo_height_px=56,
     max_inner_width_px=1200
 )
 
-# Optional helper note under the bar
 st.markdown("**Fields marked with * are mandatory**")
 
 test_ticket      = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
-failed_step_num  = st.number_input("Failed Test Step Number *", min_value=1, value=1, step=1)
+failed_step_num  = st.number_input("Failed Test Step Number *", min_value=1, value=3, step=1)
 severity         = st.selectbox("Severity *", ["Sev-1", "Sev-2", "Sev-3", "Sev-4"])
 priority         = st.selectbox("Priority *", ["Critical", "Major", "Medium", "Minor"])
 test_phase       = st.selectbox("Test Phase *", ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"])
@@ -845,7 +923,6 @@ if st.button("🧠 Generate Draft (AI-lite)"):
         st.error("Enter the Test Ticket key first.")
         st.stop()
     auth = get_auth()
-    # Background pulls
     try:
         steps_list, expected_from_zephyr = get_zephyr_steps_and_expected(test_ticket.strip(), auth)
     except Exception as e:
@@ -886,7 +963,7 @@ if st.button("🧠 Generate Draft (AI-lite)"):
     st.session_state["ctx"] = ctx
     st.success("AI-lite draft generated. Review and edit below.")
 
-# Editable preview (Impact & AI notes removed)
+# Editable preview
 if use_ai and "ai_out" in st.session_state:
     ai = st.session_state["ai_out"]
     ai["issue_description"] = st.text_area("Issue Description", ai.get("issue_description", ""), height=120)
@@ -897,7 +974,7 @@ if use_ai and "ai_out" in st.session_state:
     ai["actual_results"]     = st.text_area("Actual Results", ai.get("actual_results", ""), height=100)
 
 # ============================================================
-# HELPERS: SUMMARY, TRANSITION TO FAILED
+# SUMMARY HELPER & TRANSITION
 # ============================================================
 def build_defect_summary_from_test(copied):
     base = (copied.get("summary") or "").strip()
@@ -909,7 +986,6 @@ def build_defect_summary_from_test(copied):
     return "Observed issue during test execution"
 
 def transition_issue_to_failed(issue_key, auth):
-    # Discover transition id named 'Fail' (or 'Fail') dynamically
     r = requests.get(
         f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/transitions",
         headers={"Accept":"application/json"},
@@ -921,19 +997,14 @@ def transition_issue_to_failed(issue_key, auth):
         return False
     transitions = (r.json() or {}).get("transitions", [])
     target = None
+    lower_candidates = [c.lower() for c in JIRA_FAIL_TRANSITION_CANDIDATES]
     for t in transitions:
         name = (t.get("name") or "").strip().lower()
         to_name = (t.get("to", {}).get("name") or "").strip().lower()
-        if name in ("FAIL", "FAILED") or to_name in ("failed", "fail", "fail status", "fail state", "fail"):
-            target = t.get("id")
-            break
+        if name in lower_candidates or to_name in lower_candidates:
+            target = t.get("id"); break
     if not target:
-        for t in transitions:
-            if str(t.get("id")) == "51":
-                target = "51"
-                break
-    if not target:
-        st.warning("Could not locate a 'Failed' transition for this issue.")
+        st.warning("Could not locate a matching 'Fail' transition for this issue.")
         return False
     resp = requests.post(
         f"{JIRA_BASE_URL}/rest/api/3/issue/{issue_key}/transitions",
@@ -986,7 +1057,7 @@ if st.button("🚀 Create Defect"):
     if not severity_id or not test_phase_id:
         st.warning("Severity or Test Phase option not found on create screen; will try label fallback.")
 
-    # Background pulls
+    # Background pulls for AI etc.
     try:
         steps_list, expected_from_zephyr = get_zephyr_steps_and_expected(test_ticket.strip(), auth)
     except Exception as e:
@@ -1027,7 +1098,6 @@ if st.button("🚀 Create Defect"):
         }
         st.session_state["ai_out"] = ai_lite_draft(ctx)
 
-    # Summary/title improved (uses Test summary if meaningful, else AI suggestion)
     summary = build_defect_summary_from_test(copied)
 
     # Build description (ADF — Jira Cloud requires ADF)
@@ -1063,12 +1133,9 @@ if st.button("🚀 Create Defect"):
     else:
         create_fields[TEST_PHASE_FIELD_ID] = {"value": test_phase}
 
-    create_payload = {"fields": create_fields}
-
-    # Create issue
     create_resp = requests.post(
         f"{JIRA_BASE_URL}/rest/api/3/issue",
-        json=create_payload,
+        json={"fields": create_fields},
         headers=headers_json(),
         auth=auth,
         timeout=30
@@ -1079,7 +1146,7 @@ if st.button("🚀 Create Defect"):
         st.stop()
 
     issue_key = create_resp.json()["key"]
-    st.session_state["issue_key"] = issue_key  # Persist for reruns
+    st.session_state["issue_key"] = issue_key
     st.success(f"✅ Defect created: {issue_key}")
 
     # -- Update copied fields on the new defect --
@@ -1105,10 +1172,20 @@ if st.button("🚀 Create Defect"):
         else:
             st.success("🔁 Copied Labels/Components/Versions/Custom fields from the Test ticket.")
 
-    # Parent/Epic linking (best‑effort)
     ok, msg = try_set_defect_parent_to_epic(issue_key, copied, auth)
     st.info(f"Epic link: {msg}")
 
+    # Link defect ↔ test ticket
+    link_payload = {"type": {"name": "Relates"}, "inwardIssue": {"key": test_ticket.strip()}, "outwardIssue": {"key": issue_key}}
+    link_resp = requests.post(
+        f"{JIRA_BASE_URL}/rest/api/3/issueLink",
+        json=link_payload,
+        headers=headers_json(),
+        auth=auth,
+        timeout=30
+    )
+    if link_resp.status_code not in (200, 201, 204):
+        st.warning(f"Linking returned {link_resp.status_code}: {link_resp.text[:300]}")
 
     # --- Upload attachments (if the user added any)
     if uploaded_files:
@@ -1126,7 +1203,6 @@ if st.button("🚀 Create Defect"):
                 st.warning(f"Attachment '{file.name}' failed: {attach_resp.status_code} {attach_resp.text[:200]}")
         st.success("📎 Attachments uploaded, fields synced & Test Ticket linked")
 
- 
     # Transition Test ticket to Failed (Jira)
     transitioned = transition_issue_to_failed(test_ticket.strip(), auth)
     if transitioned:
