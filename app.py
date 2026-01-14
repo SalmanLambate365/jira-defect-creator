@@ -158,9 +158,6 @@ def _pick_brand_colors(img: Image.Image):
     if not teal_best:  teal_best  = (5, 68, 74)
     return _rgb_to_hex(green_best), _rgb_to_hex(teal_best)
     
-def add_titlebar_branding(
-
-
 from streamlit.components.v1 import html as st_html
 import base64, io
 from pathlib import Path
