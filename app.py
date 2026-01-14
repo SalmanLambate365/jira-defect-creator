@@ -159,54 +159,86 @@ def _pick_brand_colors(img: Image.Image):
     return _rgb_to_hex(green_best), _rgb_to_hex(teal_best)
 def add_titlebar_branding(
     
-- .mg-topbar {{
--   display: flex;
--   align-items: center;
--   justify-content: space-between;
--   gap: 12px;
--   max-width: {max_inner_width_px}px;  /* toggle 100% for full-width bar */
--   margin: 0 auto;
--   padding: 10px 14px;
-- }}
-+ .mg-topbar {{
-+   display: flex;
-+   align-items: center;
-+   justify-content: space-between;
-+   gap: 12px;
-+   max-width: 100%;                  /* full-bleed header */
-+   margin: 0;                        /* no centering margin */
-+   padding: 12px 16px;               /* a bit more vertical room */
-+   box-sizing: border-box;
-+ }}
 
-- .green-line {{
--   height: 4px;
--   background-color: var(--brand-green);
--   border: none;
--   margin: 0.4rem auto 0.9rem auto;
--   max-width: {max_inner_width_px}px;      /* toggle 100% for full-width divider */
-- }}
-+; }}+ .green-line {{
+html_blob = f"""
+  <style>
+    :root {{
+      --brand-green: {brand_green};
+      --brand-teal:  {brand_teal};
+      --title-fg:    #ffffff;
+      --subtitle-fg: #e2e8f0;
+    }}
 
-- .mg-logo {{
--   height: {logo_height_px}px;
--   width: auto;
--   display: block;
--   border-radius: 6px;
-- }}
-+ .mg-logo {{
-+   height: {logo_height_px}px;
-+   width: auto;
-+   display: block;
-+   border-radius: 6px;
-+   max-width: 100%;
-+ }}
-+   height: 4px;
-+   background-color: var(--brand-green);
-+   border: none;
-+   margin: 0;                         /* sit flush under the bar */
-+   width: 100%;                       /* full-bleed divider */
-+ }}
+    .mg-topbar-wrap {{
+      width: 100%;
+      background-color: var(--brand-teal);
+      margin: 0;
+      padding: 0;
+      overflow: visible;
+    }}
+
+    .mg-topbar {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      max-width: 100%;
+      margin: 0;
+      padding: 12px 16px;
+      box-sizing: border-box;
+      overflow: visible;
+    }}
+
+    .mg-title-wrap, .mg-logo-wrap {{ display:flex; align-items:center; overflow: visible; }}
+    .mg-title {{ display:flex; flex-direction:column; gap:2px; }}
+
+    .mg-title-line {{
+      color: var(--title-fg);
+      font-weight: 700;
+      font-size: 1.25rem;
+      line-height: 1.2;
+      letter-spacing: 0.2px;
+      text-shadow: 0 1px 0 rgba(0,0,0,.25);
+    }}
+    .mg-subtitle {{
+      color: var(--subtitle-fg);
+      font-weight: 500;
+      font-size: 0.95rem;
+      line-height: 1.2;
+    }}
+
+    .mg-logo {{
+      height: {logo_height_px}px;
+      width: auto;
+      display: block;
+      border-radius: 6px;
+      max-width: 100%;
+    }}
+
+    .green-line {{
+      height: 4px;
+      background-color: var(--brand-green);
+      border: none;
+      margin: 0;
+      width: 100%;
+    }}
+
+    @media (max-width: 480px) {{
+      .mg-title-line {{ font-size: 1.05rem; text-shadow: none; }}
+      .mg-subtitle   {{ font-size: 0.85rem; }}
+      .mg-logo       {{ height: 44px; }}
+    }}
+  </style>
+
+  <div class="mg-topbar-wrap">
+    <div class="mg-topbar">
+      {left_html}
+      {right_html}
+    </div>
+  </div>
+  <div class="green-line"></div>
+"""
+st_html(html_blob, height=140, scrolling=False)
 
 + /* Prevent any accidental clipping of the logo at the edges */
 
