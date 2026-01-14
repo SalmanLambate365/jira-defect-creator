@@ -113,7 +113,50 @@ def _pick_brand_colors(img: Image.Image):
         teal_best = (5, 68, 74)      # dark teal fallback
 
     return _rgb_to_hex(green_best), _rgb_to_hex(teal_best)
-
+from streamlit.components.v1 import html as st_html
+import base64, io
+from pathlib import Path
+from PIL import Image
+import colorsys
+def _rgb_to_hex(rgb):
+    r, g, b = rgb
+    return f"#{r:02x}{g:02x}{b:02x}"
+def _dominant_palette(img: Image.Image, k: int = 8):
+    small = img.copy().convert("RGBA").resize((160, 160))
+    pixels = [px for px in small.getdata() if px[3] > 0]
+    if not pixels:
+        return [((22, 163, 74), 1)]
+    pal_img = small.convert("P", palette=Image.ADAPTIVE, colors=k)
+    palette = pal_img.getpalette()[:k * 3]
+    color_counts = pal_img.getcolors() or []
+    def idx_to_rgb(i):
+        base = i * 3
+        return (palette[base], palette[base+1], palette[base+2])
+    colors = [(idx_to_rgb(i), c) for (c, i) in color_counts]
+    colors.sort(key=lambda x: x[1], reverse=True)
+    return colors
+def _pick_brand_colors(img: Image.Image):
+    def to_hsv(rgb):
+        r, g, b = [v/255 for v in rgb]
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        return (h*360.0, s, v)
+    colors = _dominant_palette(img, k=8)
+    def green_score(rgb, count):
+        h, s, v = to_hsv(rgb)
+        return (s*0.8 + v*0.2) * max(0.0, 1.0 - abs(h - 140)/60.0) * (1 + count/1000.0)
+    def teal_score(rgb, count):
+        h, s, v = to_hsv(rgb)
+        return (s*0.6 + (1 - v)*0.6) * max(0.0, 1.0 - abs(h - 180)/70.0) * (1 + count/1000.0)
+    green_best, gs_best = None, -1
+    teal_best, ts_best   = None, -1
+    for rgb, cnt in colors:
+        gs = green_score(rgb, cnt)
+        ts = teal_score(rgb, cnt)
+        if gs > gs_best: green_best, gs_best = rgb, gs
+        if ts > ts_best: teal_best, ts_best = rgb, ts
+    if not green_best: green_best = (22, 163, 74)  # #16A34A
+    if not teal_best:  teal_best  = (5, 68, 74)
+    return _rgb_to_hex(green_best), _rgb_to_hex(teal_best)
 def add_titlebar_branding(
     header_image_path: str,
     app_title: str = "🐞 AutoDefect Logger",
