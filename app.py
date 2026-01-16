@@ -1065,15 +1065,24 @@ if use_ai and "ai_out" in st.session_state:
 # SUMMARY HELPER & TRANSITION
 # ============================================================
 
-def build_defect_summary_from_test(_copied):def build_defect_summary_from_test(_    if ai and ai.get("actual_results"):
-        # Defect title = Actual Results (as requested)
-        return ai["actual_results"].strip()[:255]  # stay within Jira summary limit
-    # Fallbacks (unchanged behaviour)
+
+def build_defect_summary_from_test(_copied):
+    """
+    Defect title (summary) should be exactly the 'Actual Results' produced by AI-lite.
+    Fallbacks keep previous behavior if AI-lite hasn't run yet.
+    """
+    ai = st.session_state.get("ai_out")
+    if ai and ai.get("actual_results"):
+        # Jira summary has practical limits (~255 chars); trim defensively.
+        return ai["actual_results"].strip()[:255]
+
+    # Fallbacks (existing behavior)
     base = (_copied.get("summary") or "").strip()
     if base and base.lower() not in ("testing", "test", "defect"):
         return base[:255]
+
     return "Observed issue during test execution"
-    ai = st.session_state.get("ai_out")
+
 
 
 def transition_issue_to_failed(issue_key, auth):
