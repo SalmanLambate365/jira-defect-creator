@@ -281,32 +281,42 @@ def add_titlebar_branding(
       </div>
       <div class="green-line"></div>
     """
-    st_html(html_blob, height=140, scrolling=False)
+    st_html(html_blob, height=168, scrolling=False)
+    
+# ---- FOOTER + GLOBAL spacing (keep in the same st.markdown you already have) ----
+st.markdown(f"""
+<style>
+/* 1) Hide Streamlit's default header area to avoid double-header space */
+header[data-testid="stHeader"] {{
+    height: 0px;
+    padding: 0;
+    background: transparent;
+    border: none;
+}}
 
-    # ---- FOOTER in main page DOM (fixed to viewport bottom) + global spacing refinements ----
-    st.markdown(f"""
-        <style>
-            /* Global: slightly tighter top padding; ensure bottom space for footer */
-            .block-container {{
-                padding-top: 0.8rem;
-                padding-bottom: 96px;
-            }}
-            /* Footer: add right padding to avoid Streamlit Cloud's floating bubble */
-            .footer-fixed {{
-                position: fixed;
-                left: 0; right: 0; bottom: 0;
-                width: 100%;
-                background: #ffffff;
-                border-top: 4px solid {brand_green};
-                padding: 8px 72px 8px 16px;
-                font-size: 0.9rem;
-                color: #334155;
-                z-index: 9999;
-            }}
-            .markdown-text-container p {{ color: #334155; }}
-        </style>
-        <div class="footer-fixed">{footer_text}</div>
-    """, unsafe_allow_html=True)
+/* 2) Give the main content enough room below your custom header */
+section.main > div.block-container {{
+    padding-top: 88px;   /* was 0.8rem; ~56-96px works—88px is safe across zooms */
+    padding-bottom: 96px; /* keep for footer */
+}}
+
+/* Footer (unchanged from your file) */
+.footer-fixed {{
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    width: 100%;
+    background: #ffffff;
+    border-top: 4px solid {brand_green};
+    padding: 8px 72px 8px 16px;
+    font-size: 0.9rem;
+    color: #334155;
+    z-index: 9999;
+}}
+.markdown-text-container p {{ color: #334155; }}
+</style>
+<div class="footer-fixed">{footer_text}</div>
+""", unsafe_allow_html=True)
+
 
 # ============================================================
 # BASIC HELPERS (AUTH / JIRA COMMON)
