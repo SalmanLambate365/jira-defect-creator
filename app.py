@@ -604,70 +604,102 @@ def normalize_step(s):
 # ------- AI-LITE NEGATION HELPERS -------
 import re  # ensure present at top-level once
 
+
 def _negate_clause(text: str) -> str:
     """
-    Best-effort 'opposite' generator for short expected-result statements.
-    Keeps sentences readable and business-friendly.
+    Convert an Expected Result into a clean, grammatically correct Actual Result
+    that represents the logical *opposite*. This version handles common Jira/Zephyr 
+    Test Result phrasing such as:
+        - "<field> is updated to <value>"
+        - "<field> is populated"
+        - "<field> is displayed"
+        - "System should <verb>"
+        - avoids awkward structures like "does not trigger field".        - "System navigates to <page>"
     """
+
+    import re
+
     if not text:
         return ""
 
-    s = re.sub(r"\s+", " ", text.strip())
+    s = text.strip()
+    s = re.sub(r"\s+", " ", s)
 
-    # If the expected is already negative, keep as-is.
-    already_neg = [
-        r"\bshould\s+not\b", r"\bdoes\s+not\b", r"\bdo\s+not\b", r"\bmust\s+not\b",
-        r"\bshall\s+not\b", r"\bis\s+not\b", r"\bare\s+not\b", r"\bwon['’]t\b",
-        r"\bcannot\b", r"\bcan['’]t\b",
-    ]
-    if any(re.search(rx, s, flags=re.IGNORECASE) for rx in already_neg):
-        return s
+    # ------------------------------------------------------------
+    # 1) PATTERN: "<field> is updated to <value>"
+    # ------------------------------------------------------------
+    m = re.match(r"(.+?)\s+is\s+updated\s+to\s+(.+)", s, flags=re.IGNORECASE)
+    if m:
+        field = m.group(1).strip()
+        value = m.group(2).strip().rstrip(".")
+        return f"{field} is NOT updated to {value}."
 
-    # Positive -> negative (only the first verb to keep it natural)
-    rules = [
-        (r"\bshould\b", "does not"),
-        (r"\bmust\b", "does not"),
-        (r"\bshall\b", "does not"),
-        (r"\bcan\b", "cannot"),
-        (r"\bsuccessfully\b", "unsuccessfully"),
-        (r"\bsucceeds?\b", "fails"),
-        (r"\bworks?\b", "does not work"),
-        (r"\bdisplays?\b", "does not display"),
-        (r"\bshows?\b", "does not show"),
-        (r"\bnavigates?\b", "does not navigate"),
-        (r"\bloads?\b", "does not load"),
-        (r"\bsaves?\b", "does not save"),
-        (r"\bupdates?\b", "does not update"),
-        (r"\bpopulates?\b", "does not populate"),
-        (r"\bvalidates?\b", "does not validate"),
-        (r"\bproceeds?\b", "does not proceed"),
-        (r"\bcontinues?\b", "does not continue"),
-        (r"\bredirects?\b", "does not redirect"),
-        (r"\breturns?\b", "does not return"),
-        (r"\brenders?\b", "does not render"),
-        (r"\bcalculates?\b", "does not calculate"),
-        (r"\baccepts?\b", "does not accept"),
-        (r"\ballows?\b", "does not allow"),
-        (r"\btriggers?\b", "does not trigger"),
-        (r"\bcreates?\b", "does not create"),
-        (r"\bdownloads?\b", "does not download"),
-    ]
+    # ------------------------------------------------------------
+    # 2) PATTERN: "<field> is populated"
+    # ------------------------------------------------------------
+    m = re.match(r"(.+?)\s+is\s+populated\b(.*)", s, flags=re.IGNORECASE)
+    if m:
+        field = m.group(1).strip()
+        return f"{field} is NOT populated."
 
-    changed = False
-    for rx, repl in rules:
-        if re.search(rx, s, flags=re.IGNORECASE):
-            s = re.sub(rx, repl, s, count=1, flags=re.IGNORECASE)
-            changed = True
-            break
+    # ------------------------------------------------------------
+    # 3) PATTERN: "<field> is displayed/shown"
+    # ------------------------------------------------------------
+    m = re.match(r"(.+?)\s+is\s+(displayed|shown)\b(.*)", s, flags=re.IGNORECASE)
+    if m:
+        field = m.group(1).strip()
+        return f"{field} is NOT displayed."
 
-    if not changed:
-        # Generic negation fallback
-        s = re.sub(r"^\s*(the|a|an)\s+", "", s, flags=re.IGNORECASE)
-        s = f"Does not {s[0].lower() + s[1:]}" if s else "Does not meet the expected behavior."
+    # ------------------------------------------------------------
+    # 4) PATTERN: "<field> is returned"
+    # ------------------------------------------------------------
+    m = re.match(r"(.+?)\s+is\s+returned\b(.*)", s, flags=re.IGNORECASE)
+    if m:
+        field = m.group(1).strip()
+        return f"{field} is NOT returned."
 
-    s = re.sub(r"\s+", " ", s).strip()
-    s = re.sub(r"\.{2,}$", ".", s)
-    return s
+    # ------------------------------------------------------------
+    # 5) PATTERN: "System should <verb>"
+    # ------------------------------------------------------------
+    m = re.match(r"System\s+should\s+(.*)", s, flags=re.IGNORECASE)
+    if m:
+        action = m.group(1).strip().rstrip(".")
+        return f"System does NOT {action}."
+
+    # ------------------------------------------------------------
+    # 6) PATTERN: "<field> should <verb>"
+    # ------------------------------------------------------------
+    m = re.match(r"(.+?)\s+should\s+(.*)", s, flags=re.IGNORECASE)
+    if m:
+        field = m.group(1).strip()
+        action = m.group(2).strip().rstrip(".")
+        return f"{field} does NOT {action}."
+
+    # ------------------------------------------------------------
+    # 7) PATTERN: "System navigates to <page>"
+    # ------------------------------------------------------------
+    m = re.match(r"System\s+navigates\s+to\s+(.+)", s, flags=re.IGNORECASE)
+    if m:
+        target = m.group(1).strip().rstrip(".")
+        return f"System does NOT navigate to {target}."
+
+    # ------------------------------------------------------------
+    # 8) PATTERN: "<field> displays <value>"
+    # ------------------------------------------------------------
+    m = re.match(r"(.+?)\s+displays\s+(.+)", s, flags=re.IGNORECASE)
+    if m:
+        field = m.group(1).strip()
+        value = m.group(2).strip().rstrip(".")
+        return f"{field} does NOT display {value}."
+
+    # ------------------------------------------------------------
+    # 9) DEFAULT NEGATION (fallback)
+    # ------------------------------------------------------------
+    # If no specific pattern matched, fall back to:
+    # "<sentence>" -> "Does NOT <sentence>"
+    s_clean = s.rstrip(".")
+    return f"Does NOT {s_clean[0].lower() + s_clean[1:]}."
+        - "value is returned"
 
 
 def _make_issue_description(step_text: str, expected: str, actual: str, phase: str | None = "") -> str:
