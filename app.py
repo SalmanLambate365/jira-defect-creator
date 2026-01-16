@@ -164,6 +164,7 @@ from pathlib import Path
 from PIL import Image
 import colorsys
 
+
 def add_titlebar_branding(
     header_image_path: str,
     app_title: str = "🐞 AutoDefect Logger",
@@ -180,22 +181,32 @@ def add_titlebar_branding(
     outside the iframe so it stays fixed to the page bottom. Includes spacing,
     contrast, and mobile refinements.
     """
+    # -------------------------------
     # Compute brand colors + base64 image URL
+    # -------------------------------
     logo_data_url = ""
-    if Path(header_image_path).exists():
-        img = Image.open(header_image_path).convert("RGB")
-        auto_green, auto_teal = _pick_brand_colors(img)
-        brand_green = brand_green_hex or auto_green
-        brand_teal  = brand_teal_hex  or auto_teal
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        b64 = base64.b64encode(buf.getvalue()).decode()
-        logo_data_url = f"data:image/png;base64,{b64}"
-    else:
-        brand_green = brand_green_hex or "#16A34A"
-        brand_teal  = brand_teal_hex  or "#0f5b5f"
-        logo_data_url = ""
+    # Sensible defaults in case the image is missing
+    brand_green = brand_green_hex or "#16A34A"
+    brand_teal  = brand_teal_hex  or "#0f5b5f"
 
+    if Path(header_image_path).exists():
+        try:
+            img = Image.open(header_image_path).convert("RGB")
+            auto_green, auto_teal = _pick_brand_colors(img)
+            brand_green = brand_green_hex or auto_green
+            brand_teal  = brand_teal_hex  or auto_teal
+
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            logo_data_url = f"data:image/png;base64,{b64}"
+        except Exception:
+            # If anything goes wrong, keep defaults and continue
+            logo_data_url = ""
+
+    # -------------------------------
+    # Title/Logo HTML fragments
+    # -------------------------------
     title_html = f"""
       <div class="mg-title">
         <div class="mg-title-line">{app_title}</div>
@@ -203,7 +214,6 @@ def add_titlebar_branding(
       </div>
     """
 
-    # Layout: two fixed regions to ensure no base64 prints as text
     if logo_side.lower() == "left":
         left_html  = f"<div class='mg-logo-wrap'>{f'<img class=\"mg-logo\" src=\"{logo_data_url}\" alt=\"M&G Logo\" />' if logo_data_url else ''}</div>"
         right_html = f"<div class='mg-title-wrap'>{title_html}</div>"
@@ -211,7 +221,15 @@ def add_titlebar_branding(
         left_html  = f"<div class='mg-title-wrap'>{title_html}</div>"
         right_html = f"<div class='mg-logo-wrap'>{f'<img class=\"mg-logo\" src=\"{logo_data_url}\" alt=\"M&G Logo\" />' if logo_data_url else ''}</div>"
 
-    # ---- TOP BAR + DIVIDER in iframe ----
+    # -------------------------------
+    # Dynamic spacing derived from logo size
+    # -------------------------------
+    padding_top_px = max(72, int(logo_height_px) + 32)   # space for content below top bar
+    iframe_height  = max(160, int(logo_height_px) + 112) # space for bar + divider within iframe
+
+    # -------------------------------
+    # TOP BAR + DIVIDER (rendered inside an iframe)
+    # -------------------------------
     html_blob = f"""
       <style>
         :root {{
@@ -232,7 +250,7 @@ def add_titlebar_branding(
           align-items: center;
           justify-content: space-between;
           gap: 12px;
-          max-width: {max_inner_width_px}px;  /* toggle 100% for full-width bar */
+          max-width: {max_inner_width_px}px;  /* switch to 100% for full-bleed */
           margin: 0 auto;
           padding: 10px 14px;
         }}
@@ -267,10 +285,9 @@ def add_titlebar_branding(
           height: 4px;
           background-color: var(--brand-green);
           border: none;
-          margin: 0.4rem auto 0.9rem auto;
-          max-width: {max_inner_width_px}px;      /* toggle 100% for full-width divider */
+          margin: 0.5rem auto 1.0rem auto;
+          max-width: {max_inner_width_px}px;      /* switch to 100% for full-bleed */
         }}
-
       </style>
 
       <div class="mg-topbar-wrap">
@@ -281,12 +298,16 @@ def add_titlebar_branding(
       </div>
       <div class="green-line"></div>
     """
-    st_html(html_blob, height=168, scrolling=False)
-    
-# ---- FOOTER + GLOBAL spacing (keep in the same st.markdown you already have) ----
-st.markdown(f"""
+    st_html(html_blob, height=iframe_height, scrolling=False)
+
+    # -------------------------------
+    # FOOTER + GLOBAL spacing (in the main page DOM)
+    # Keep this INSIDE the function so brand_green/footer_text are in scope.
+    # -------------------------------
+    st.markdown(
+        f"""
 <style>
-/* 1) Hide Streamlit's default header area to avoid double-header space */
+/* Hide Streamlit's default header area to avoid double-header space */
 header[data-testid="stHeader"] {{
     height: 0px;
     padding: 0;
@@ -294,13 +315,13 @@ header[data-testid="stHeader"] {{
     border: none;
 }}
 
-/* 2) Give the main content enough room below your custom header */
+/* Ensure the main content starts below the custom header */
 section.main > div.block-container {{
-    padding-top: 88px;   /* was 0.8rem; ~56-96px works—88px is safe across zooms */
-    padding-bottom: 96px; /* keep for footer */
+    padding-top: {padding_top_px}px;  /* derived from logo height */
+    padding-bottom: 96px;             /* space for fixed footer */
 }}
 
-/* Footer (unchanged from your file) */
+/* Footer pinned to the bottom of the viewport */
 .footer-fixed {{
     position: fixed;
     left: 0; right: 0; bottom: 0;
@@ -315,7 +336,9 @@ section.main > div.block-container {{
 .markdown-text-container p {{ color: #334155; }}
 </style>
 <div class="footer-fixed">{footer_text}</div>
-""", unsafe_allow_html=True)
+""",
+        unsafe_allow_html=True
+    )
 
 
 # ============================================================
