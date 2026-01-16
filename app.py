@@ -601,7 +601,10 @@ def normalize_step(s):
     return s
 
 
-# ------- AI-LITE NEGATION HELPERS -------#(text: str) -> str:
+# ------- AI-LITE NEGATION HELPERS -------
+import re  # ensure present at top-level once
+
+def _negate_clause(text: str) -> str:
     """
     Best-effort 'opposite' generator for short expected-result statements.
     Keeps sentences readable and business-friendly.
