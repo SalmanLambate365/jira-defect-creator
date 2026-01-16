@@ -866,8 +866,8 @@ st.set_page_config(page_title="Jira Defect Creator", layout="centered")
 # --- Title bar (logo + title), green divider, fixed footer with refinements ---
 add_titlebar_branding(
     header_image_path="mg_branding.png",  # change to "assets/mg_branding.png" if moved
-    app_title="🐞 AutoDefect Logger",
-    app_subtitle="Jira Defect Creator",
+    app_title="AutoDefect Logger",
+    app_subtitle="",
     footer_text="AutoDefect Logger • © 2026",
     # brand_green_hex="#00A878",   # uncomment to force exact brand colors
     # brand_teal_hex="#004D53",
@@ -879,7 +879,7 @@ add_titlebar_branding(
 st.markdown("**Fields marked with * are mandatory**")
 
 test_ticket      = st.text_input("Test Ticket Number * (e.g. CT-12345)", value="")
-failed_step_num  = st.number_input("Failed Test Step Number *", min_value=1, value=3, step=1)
+failed_step_num  = st.number_input("Failed Test Step Number *", min_value=1, value=1, step=1)
 severity         = st.selectbox("Severity *", ["Sev-1", "Sev-2", "Sev-3", "Sev-4"])
 priority         = st.selectbox("Priority *", ["Critical", "Major", "Medium", "Minor"])
 test_phase       = st.selectbox("Test Phase *", ["FAT", "SIT", "Regression", "Performance", "Production", "NFT", "E2E", "QA"])
