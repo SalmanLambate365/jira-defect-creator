@@ -611,6 +611,7 @@ def _negate_clause(text: str) -> str:
     Convert an Expected Result into a clean, grammatically correct Actual Result
     representing the opposite behavior. Handles patterns like:
       • "<field> is updated to <value>"
+      • "<field> is completed with <value>"
       • "<field> is populated"
       • "<field> is displayed/shown"
       • "<field> is returned"
@@ -624,6 +625,15 @@ def _negate_clause(text: str) -> str:
 
     s = text.strip()
     s = re.sub(r"\s+", " ", s)
+
+    # ------------------------------------------------------------
+    # "<field> is completed with <value>"
+    # ------------------------------------------------------------
+    m = re.match(r"(.+?)\s+is\s+completed\s+with\s+(.+)", s, flags=re.IGNORECASE)
+    if m:
+        field = m.group(1).strip()
+        value = m.group(2).strip().rstrip(".")
+        return f"{field} is NOT completed with {value}."
 
     # ------------------------------------------------------------
     # "<field> is updated to <value>"
