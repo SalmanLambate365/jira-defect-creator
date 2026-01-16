@@ -605,18 +605,18 @@ def normalize_step(s):
 import re  # ensure present at top-level once
 
 
+
 def _negate_clause(text: str) -> str:
     """
     Convert an Expected Result into a clean, grammatically correct Actual Result
-    that represents the logical *opposite*. This version handles common Jira/Zephyr 
-    Test Result phrasing such as:
-        - "<field> is updated to <value>"
-        - "<field> is populated"
-        - "<field> is displayed"
-        - "System should <verb>"
-        - avoids awkward structures like "does not trigger field".        - "System navigates to <page>"
+    representing the opposite behavior. Handles patterns like:
+      • "<field> is updated to <value>"
+      • "<field> is populated"
+      • "<field> is displayed/shown"
+      • "<field> is returned"
+      • "System should <action>"
+      • "<field> should <action>"
     """
-
     import re
 
     if not text:
@@ -626,7 +626,7 @@ def _negate_clause(text: str) -> str:
     s = re.sub(r"\s+", " ", s)
 
     # ------------------------------------------------------------
-    # 1) PATTERN: "<field> is updated to <value>"
+    # "<field> is updated to <value>"
     # ------------------------------------------------------------
     m = re.match(r"(.+?)\s+is\s+updated\s+to\s+(.+)", s, flags=re.IGNORECASE)
     if m:
@@ -635,31 +635,31 @@ def _negate_clause(text: str) -> str:
         return f"{field} is NOT updated to {value}."
 
     # ------------------------------------------------------------
-    # 2) PATTERN: "<field> is populated"
+    # "<field> is populated"
     # ------------------------------------------------------------
-    m = re.match(r"(.+?)\s+is\s+populated\b(.*)", s, flags=re.IGNORECASE)
+    m = re.match(r"(.+?)\s+is\s+populated\b.*", s, flags=re.IGNORECASE)
     if m:
         field = m.group(1).strip()
         return f"{field} is NOT populated."
 
     # ------------------------------------------------------------
-    # 3) PATTERN: "<field> is displayed/shown"
+    # "<field> is displayed/shown"
     # ------------------------------------------------------------
-    m = re.match(r"(.+?)\s+is\s+(displayed|shown)\b(.*)", s, flags=re.IGNORECASE)
+    m = re.match(r"(.+?)\s+is\s+(displayed|shown)\b.*", s, flags=re.IGNORECASE)
     if m:
         field = m.group(1).strip()
         return f"{field} is NOT displayed."
 
     # ------------------------------------------------------------
-    # 4) PATTERN: "<field> is returned"
+    # "<field> is returned"
     # ------------------------------------------------------------
-    m = re.match(r"(.+?)\s+is\s+returned\b(.*)", s, flags=re.IGNORECASE)
+    m = re.match(r"(.+?)\s+is\s+returned\b.*", s, flags=re.IGNORECASE)
     if m:
         field = m.group(1).strip()
         return f"{field} is NOT returned."
 
     # ------------------------------------------------------------
-    # 5) PATTERN: "System should <verb>"
+    # "System should <action>"
     # ------------------------------------------------------------
     m = re.match(r"System\s+should\s+(.*)", s, flags=re.IGNORECASE)
     if m:
@@ -667,7 +667,7 @@ def _negate_clause(text: str) -> str:
         return f"System does NOT {action}."
 
     # ------------------------------------------------------------
-    # 6) PATTERN: "<field> should <verb>"
+    # "<field> should <action>"
     # ------------------------------------------------------------
     m = re.match(r"(.+?)\s+should\s+(.*)", s, flags=re.IGNORECASE)
     if m:
@@ -676,7 +676,7 @@ def _negate_clause(text: str) -> str:
         return f"{field} does NOT {action}."
 
     # ------------------------------------------------------------
-    # 7) PATTERN: "System navigates to <page>"
+    # "System navigates to <location>"
     # ------------------------------------------------------------
     m = re.match(r"System\s+navigates\s+to\s+(.+)", s, flags=re.IGNORECASE)
     if m:
@@ -684,7 +684,7 @@ def _negate_clause(text: str) -> str:
         return f"System does NOT navigate to {target}."
 
     # ------------------------------------------------------------
-    # 8) PATTERN: "<field> displays <value>"
+    # "<field> displays <value>"
     # ------------------------------------------------------------
     m = re.match(r"(.+?)\s+displays\s+(.+)", s, flags=re.IGNORECASE)
     if m:
@@ -693,13 +693,10 @@ def _negate_clause(text: str) -> str:
         return f"{field} does NOT display {value}."
 
     # ------------------------------------------------------------
-    # 9) DEFAULT NEGATION (fallback)
+    # DEFAULT FALLBACK
     # ------------------------------------------------------------
-    # If no specific pattern matched, fall back to:
-    # "<sentence>" -> "Does NOT <sentence>"
     s_clean = s.rstrip(".")
     return f"Does NOT {s_clean[0].lower() + s_clean[1:]}."
-        - "value is returned"
 
 
 def _make_issue_description(step_text: str, expected: str, actual: str, phase: str | None = "") -> str:
