@@ -600,45 +600,127 @@ def normalize_step(s):
     s = re.sub(r'\s+', ' ', s)
     return s
 
+
+# ------- AI-LITE NEGATION HELPERS -------#(text: str) -> str:
+    """
+    Best-effort 'opposite' generator for short expected-result statements.
+    Keeps sentences readable and business-friendly.
+    """
+    if not text:
+        return ""
+
+    s = re.sub(r"\s+", " ", text.strip())
+
+    # If the expected is already negative, keep as-is.
+    already_neg = [
+        r"\bshould\s+not\b", r"\bdoes\s+not\b", r"\bdo\s+not\b", r"\bmust\s+not\b",
+        r"\bshall\s+not\b", r"\bis\s+not\b", r"\bare\s+not\b", r"\bwon['’]t\b",
+        r"\bcannot\b", r"\bcan['’]t\b",
+    ]
+    if any(re.search(rx, s, flags=re.IGNORECASE) for rx in already_neg):
+        return s
+
+    # Positive -> negative (only the first verb to keep it natural)
+    rules = [
+        (r"\bshould\b", "does not"),
+        (r"\bmust\b", "does not"),
+        (r"\bshall\b", "does not"),
+        (r"\bcan\b", "cannot"),
+        (r"\bsuccessfully\b", "unsuccessfully"),
+        (r"\bsucceeds?\b", "fails"),
+        (r"\bworks?\b", "does not work"),
+        (r"\bdisplays?\b", "does not display"),
+        (r"\bshows?\b", "does not show"),
+        (r"\bnavigates?\b", "does not navigate"),
+        (r"\bloads?\b", "does not load"),
+        (r"\bsaves?\b", "does not save"),
+        (r"\bupdates?\b", "does not update"),
+        (r"\bpopulates?\b", "does not populate"),
+        (r"\bvalidates?\b", "does not validate"),
+        (r"\bproceeds?\b", "does not proceed"),
+        (r"\bcontinues?\b", "does not continue"),
+        (r"\bredirects?\b", "does not redirect"),
+        (r"\breturns?\b", "does not return"),
+        (r"\brenders?\b", "does not render"),
+        (r"\bcalculates?\b", "does not calculate"),
+        (r"\baccepts?\b", "does not accept"),
+        (r"\ballows?\b", "does not allow"),
+        (r"\btriggers?\b", "does not trigger"),
+        (r"\bcreates?\b", "does not create"),
+        (r"\bdownloads?\b", "does not download"),
+    ]
+
+    changed = False
+    for rx, repl in rules:
+        if re.search(rx, s, flags=re.IGNORECASE):
+            s = re.sub(rx, repl, s, count=1, flags=re.IGNORECASE)
+            changed = True
+            break
+
+    if not changed:
+        # Generic negation fallback
+        s = re.sub(r"^\s*(the|a|an)\s+", "", s, flags=re.IGNORECASE)
+        s = f"Does not {s[0].lower() + s[1:]}" if s else "Does not meet the expected behavior."
+
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"\.{2,}$", ".", s)
+    return s
+
+
+def _make_issue_description(step_text: str, expected: str, actual: str, phase: str | None = "") -> str:
+    """
+    Compose a clear issue description from context + expected + actual.
+    """
+    phase_prefix = f"During {phase} testing, " if phase else ""
+    step_part = f"while performing step \"{step_text}\" " if step_text else ""
+    exp_part = f"the expected behavior was: \"{expected}\"; " if expected else ""
+    act_part = f"however, the system {actual[0].lower() + actual[1:] if actual else 'did not meet the expected behavior'}."
+    return f"{phase_prefix}{step_part}{exp_part}{act_part}".strip()
+
+
+
 def ai_lite_draft(context):
     """
-    Produce cleaner, business‑focused content:
-    - Summary: from failed step + phase
-    - Issue Description: concise impact statement
-    - Steps: keep, but mark failed
-    - Expected: generic acceptance of selection
-    - Actual: concise failure + evidence note
+    Enhanced AI-lite draft:
+    1) Expected = Zephyr 'Test Result' for the FAILED step.
+    2) Actual   = smart opposite/negation of Expected (unless user provided Actual).
+    3) Issue Description = combination of step context + expected + actual.
+    4) Summary (Defect title) = Actual.
     """
     raw_steps = context.get("zephyr_steps") or []
     zephyr_expected = context.get("zephyr_expected") or []
-    steps = [normalize_step(x) for x in raw_steps if x and x.strip()]
     failed_n = int(context.get("failed_step_num") or 0)
     idx = failed_n - 1 if failed_n >= 1 else None
-    selected_step = steps[idx] if (idx is not None and idx < len(steps)) else None
     phase = (context.get("test_phase") or "").strip()
 
-    option, field = None, None
-    if selected_step:
-        m = re.search(r"Select\s+'([^']+)'\s+from\s+'([^']+)'", selected_step, flags=re.I)
-        if m: option, field = m.group(1), m.group(2)
+    # Normalize steps for display
+    steps = [normalize_step(x) for x in raw_steps if x and x.strip()]
+    selected_step = steps[idx] if (idx is not None and idx < len(steps)) else ""
 
-    expected_txt = (context.get("test_expected_results") or "").strip() or \
-                   "System should accept the selection and continue the workflow without errors."
-    actual_txt = (context.get("test_actual_results") or "").strip()
-    if not actual_txt:
-        actual_txt = (f"System fails to proceed after selecting '{option}', blocking the process. "
-                      f"See attachments for details.") if option else \
-                     "System fails to proceed, blocking the process. See attachments for details."
+    # 1) Expected from the highlighted Zephyr column
+    expected_txt = ""
+    if idx is not None and idx < len(zephyr_expected):
+        expected_txt = (zephyr_expected[idx] or "").strip()
 
-    if option and field:
-        phase_prefix = f"During {phase} testing, " if phase else ""
-        issue_desc = f"{phase_prefix}selecting '{option}' in '{field}' fails to proceed as expected, preventing completion of the workflow."
-        summary = f"Incorrect behavior when selecting '{option}' in '{field}'" + (f" during {phase}" if phase else "")
-    else:
-        phase_prefix = f"During {phase} testing, " if phase else ""
-        issue_desc = f"{phase_prefix}the workflow fails to proceed due to a selection error."
-        summary = "Workflow does not proceed after selection" + (f" during {phase}" if phase else "")
+    # Fallbacks if Zephyr "Test Result" is empty
+    if not expected_txt:
+        expected_txt = (context.get("test_expected_results") or "").strip()
+    if not expected_txt:
+        expected_txt = "System should proceed as per the step’s acceptance criteria."
 
+    # 2) Actual = opposite of Expected (unless provided explicitly)
+    actual_txt = _negate_clause(expected_txt)
+    provided_actual = (context.get("test_actual_results") or "").strip()
+    if provided_actual:
+        actual_txt = provided_actual
+
+    # 3) Issue Description
+    issue_desc = _make_issue_description(selected_step, expected_txt, actual_txt, phase=phase)
+
+    # 4) Summary = Actual
+    summary = actual_txt
+
+    # Mark failed step for readability
     if idx is not None and idx < len(steps):
         steps[idx] = f"[FAILED] {steps[idx]}"
 
@@ -650,6 +732,8 @@ def ai_lite_draft(context):
         "actual_results": actual_txt,
         "confidence": "n/a"
     }
+
+
 
 def make_adf_from_ai(test_key, ai, evidence_names):
     content = []
@@ -980,14 +1064,17 @@ if use_ai and "ai_out" in st.session_state:
 # ============================================================
 # SUMMARY HELPER & TRANSITION
 # ============================================================
-def build_defect_summary_from_test(copied):
-    base = (copied.get("summary") or "").strip()
+
+def build_defect_summary_from_test(_copied):def build_defect_summary_from_test(_    if ai and ai.get("actual_results"):
+        # Defect title = Actual Results (as requested)
+        return ai["actual_results"].strip()[:255]  # stay within Jira summary limit
+    # Fallbacks (unchanged behaviour)
+    base = (_copied.get("summary") or "").strip()
     if base and base.lower() not in ("testing", "test", "defect"):
-        return base
-    ai = st.session_state.get("ai_out")
-    if ai and ai.get("summary_suggestion"):
-        return ai["summary_suggestion"]
+        return base[:255]
     return "Observed issue during test execution"
+    ai = st.session_state.get("ai_out")
+
 
 def transition_issue_to_failed(issue_key, auth):
     r = requests.get(
