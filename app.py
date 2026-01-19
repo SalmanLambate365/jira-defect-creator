@@ -1306,10 +1306,6 @@ def transition_issue_to_failed(issue_key, auth):
 # CREATE DEFECT
 # ============================================================
 if st.button("🚀 Create Defect"):
-    
-execution_obj = None  # <--- ADD
-    auth = None  
-
     if not all([test_ticket.strip(), severity, priority, test_phase]):
         st.error("Please fill all mandatory fields (*)")
         st.stop()
@@ -1516,15 +1512,14 @@ except Exception as e:
     st.warning(f"Zephyr operations failed: {e}")
 
 # --- (Optional) Update step result in Zephyr ---
-
 try:
-    if execution_obj is not None and ENABLE_STEP_UPDATE:
+    if execution_obj and ENABLE_STEP_UPDATE:
         fail_zephyr_step(execution_obj.get('id'), failed_step_num)
-    elif execution_obj is not None:
+        st.success("❗ Failed step updated in Zephyr.")
+    elif execution_obj:
         st.info("Step update skipped (ENABLE_STEP_UPDATE = False).")
 except Exception as e:
     st.warning(f"Could not update Zephyr failed step: {e}")
-
 
 # --- Set overall execution status to FAIL in Zephyr ---
 try:
