@@ -1493,8 +1493,7 @@ try:
         try:
             link_defect_to_execution_cloud(execution_obj, issue_key, auth)
             st.success("🔗 Defect linked to Zephyr execution.")
-        except Exception as e:
-            st.warning(f"Failed to link defect to Zephyr execution: {e}")
+        
 
 
         # ---- NEW: also create one standard 'Relates' link on the Test (idempotent) ----
@@ -1510,8 +1509,7 @@ try:
         except Exception as e:
             st.warning(f"Standard link step skipped due to error: {e}")
 
-            except Exception as e:
-                st.warning(f"Failed to link defect to Zephyr execution: {e}")
+            
 
             # Step update (disabled by default)
             try:
