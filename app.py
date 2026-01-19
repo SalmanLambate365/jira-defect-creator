@@ -1496,9 +1496,6 @@ try:
 except Exception as e:
     st.warning(f"Linking failed: {e}")
 
-    if link_resp.status_code not in (200, 201, 204):
-        st.warning(f"Linking returned {link_resp.status_code}: {link_resp.text[:300]}")
-
 
  # Attachments
     if uploaded_files:
