@@ -1484,7 +1484,6 @@ if st.button("🚀 Create Defect"):
 
   
 
-
 # --- Link defect to Zephyr execution ---
 try:
     execution_obj = find_latest_execution(test_ticket.strip(), auth)
@@ -1501,45 +1500,31 @@ try:
 except Exception as e:
     st.warning(f"Zephyr operations failed: {e}")
 
-# --- Also create one standard 'Relates' link on the Test (idempotent) ---
+# --- (Optional) Update step result in Zephyr ---
 try:
-    if CREATE_STANDARD_TEST_LINK:
-        tkey = test_ticket.strip()
-        if not _relates_link_exists(tkey, issue_key, auth):
-            if _create_relates_link(tkey, issue_key, auth):
-                st.info("🔗 Also created standard 'Relates' link on the Test ticket.")
-            else:
-                st.warning("Could not create the standard Test ↔ Defect link (non-fatal).")
-        # else: link already exists; do nothing
+    if execution_obj and ENABLE_STEP_UPDATE:
+        fail_zephyr_step(execution_obj.get('id'), failed_step_num)
+        st.success("❗ Failed step updated in Zephyr.")
+    elif execution_obj:
+        st.info("Step update skipped (ENABLE_STEP_UPDATE = False).")
 except Exception as e:
-    st.warning(f"Standard link step skipped due to error: {e}")
+    st.warning(f"Could not update Zephyr failed step: {e}")
 
+# --- Set overall execution status to FAIL in Zephyr ---
+try:
+    if execution_obj:
+        fail_execution_cloud(execution_obj)
+        st.success("🟥 Zephyr execution status set to FAIL (Zephyr).")
+except Exception as e:
+    st.warning(f"Failed to update Zephyr execution status: {e}")
 
-            
-            # Step update (disabled by default)
-            try:
-                if ENABLE_STEP_UPDATE:
-                    fail_zephyr_step(execution_obj.get('id'), failed_step_num)
-                    st.success("❗ Failed step updated in Zephyr.")
-                else:
-                    st.info("Step update skipped (ENABLE_STEP_UPDATE = False).")
-            except Exception as e:
-                st.warning(f"Could not update Zephyr failed step: {e}")
+# --- Safe link rendering (works across reruns) ---
+ik = st.session_state.get("issue_key")
+if ik:
+    st.link_button("Open Defect in Jira", f"{JIRA_BASE_URL}/browse/{ik}")
+else:
+    st.info("Create a defect first to enable the Jira link.")
 
-            try:
-                fail_execution_cloud(execution_obj)
-                st.success("🟥 Zephyr execution status set to FAIL (Zephyr).")
-            except Exception as e:
-                st.warning(f"Failed to update Zephyr execution status: {e}")
-    except Exception as e:
-        st.warning(f"Zephyr operations failed: {e}")
-
-    # Safe link rendering (works across reruns)
-    ik = st.session_state.get("issue_key")
-    if ik:
-        st.link_button("Open Defect in Jira", f"{JIRA_BASE_URL}/browse/{ik}")
-    else:
-        st.info("Create a defect first to enable the Jira link.")
 
 import hashlib
 import hmac
