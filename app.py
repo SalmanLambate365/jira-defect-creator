@@ -1302,13 +1302,21 @@ def transition_issue_to_failed(issue_key, auth):
         return False
     return True
 
+
 # ============================================================
 # CREATE DEFECT
 # ============================================================
 if st.button("🚀 Create Defect"):
+
+    # --- Initialize locals so later blocks can safely check them ---
+    execution_obj = None   # <--- ADD (indented)
+    auth = None            # <--- ADD (indented)
+
     if not all([test_ticket.strip(), severity, priority, test_phase]):
         st.error("Please fill all mandatory fields (*)")
         st.stop()
+
+    # Obtain Jira auth only after basic validation
     auth = get_auth()
 
     # Resolve issue type & field meta
@@ -1317,6 +1325,7 @@ if st.button("🚀 Create Defect"):
     if r_it.status_code != 200:
         st.error(f"Failed to fetch issue types: {r_it.status_code} {r_it.text[:300]}")
         st.stop()
+
     it_by_name = {it.get("name"): it.get("id") for it in (r_it.json().get("issueTypes") or []) if it.get("id")}
     issue_type_id = next((it_by_name[n] for n in ISSUE_TYPE_CANDIDATES if n in it_by_name), None) or (r_it.json().get("issueTypes") or [{}])[0].get("id")
 
@@ -1336,17 +1345,18 @@ if st.button("🚀 Create Defect"):
                         return opt.get("id")
         return None
 
-    severity_id   = get_option_id(fields_meta, SEVERITY_FIELD_ID, severity)
+    severity_id = get_option_id(fields_meta, SEVERITY_FIELD_ID, severity)
     test_phase_id = get_option_id(fields_meta, TEST_PHASE_FIELD_ID, test_phase)
     if not severity_id or not test_phase_id:
         st.warning("Severity or Test Phase option not found on create screen; will try label fallback.")
 
-    # Background pulls for AI etc.
+    # Background pulls (Zephyr steps + Test ticket fields)
     try:
         steps_list, expected_from_zephyr = get_zephyr_steps_and_expected(test_ticket.strip(), auth)
     except Exception as e:
         steps_list, expected_from_zephyr = [], []
         st.warning(f"Zephyr fetch failed: {e}")
+
     try:
         copied = fetch_test_ticket_fields_and_text(test_ticket.strip(), auth)
     except Exception as e:
@@ -1360,7 +1370,7 @@ if st.button("🚀 Create Defect"):
 
     evidence_names = [f.name for f in (uploaded_files or [])]
 
-    # Ensure AI‑lite context exists for clean style
+    # Ensure AI-lite context exists
     if use_ai and "ai_out" not in st.session_state:
         ctx = {
             "project_key": PROJECT_KEY,
@@ -1384,7 +1394,7 @@ if st.button("🚀 Create Defect"):
 
     summary = build_defect_summary_from_test(copied)
 
-    # Build description (ADF — Jira Cloud requires ADF)
+    # Description (ADF)
     if use_ai and "ai_out" in st.session_state:
         description_adf = make_adf_from_ai(
             test_key=test_ticket.strip(),
@@ -1400,7 +1410,7 @@ if st.button("🚀 Create Defect"):
             ]
         }
 
-    # Create payload — ensure description is ADF; use option ids if available, else label values
+    # Create payload
     create_fields = {
         "project": {"key": PROJECT_KEY},
         "issuetype": {"id": issue_type_id},
@@ -1433,13 +1443,13 @@ if st.button("🚀 Create Defect"):
     st.session_state["issue_key"] = issue_key
     st.success(f"✅ Defect created: {issue_key}")
 
-    # -- Update copied fields on the new defect --
+    # -- Copy fields from Test
     edit_fields = {}
     if copied["labels"]:
         edit_fields["labels"] = [lbl for lbl in copied["labels"] if lbl != "JiraTestGenAI"]
-    if copied["components"]:  edit_fields["components"]  = copied["components"]
+    if copied["components"]: edit_fields["components"] = copied["components"]
     if copied["fixVersions"]: edit_fields["fixVersions"] = copied["fixVersions"]
-    if copied["versions"]:    edit_fields["versions"]    = copied["versions"]
+    if copied["versions"]: edit_fields["versions"] = copied["versions"]
     for fid, val in copied["custom"].items():
         edit_fields[fid] = val
 
@@ -1458,8 +1468,8 @@ if st.button("🚀 Create Defect"):
 
     ok, msg = try_set_defect_parent_to_epic(issue_key, copied, auth)
     st.info(f"Epic link: {msg}")
-    
- # Link defect ↔ test ticket
+
+    # Link defect ↔ test ticket
     link_payload = {"type": {"name": "Relates"}, "inwardIssue": {"key": test_ticket.strip()}, "outwardIssue": {"key": issue_key}}
     link_resp = requests.post(
         f"{JIRA_BASE_URL}/rest/api/3/issueLink",
@@ -1471,8 +1481,7 @@ if st.button("🚀 Create Defect"):
     if link_resp.status_code not in (200, 201, 204):
         st.warning(f"Linking returned {link_resp.status_code}: {link_resp.text[:300]}")
 
-
-    # --- Upload attachments (if the user added any)
+    # Attachments
     if uploaded_files:
         for file in uploaded_files:
             attach_headers = {"X-Atlassian-Token": "no-check", "Accept": "application/json"}
@@ -1486,48 +1495,47 @@ if st.button("🚀 Create Defect"):
             )
             if attach_resp.status_code not in (200, 201):
                 st.warning(f"Attachment '{file.name}' failed: {attach_resp.status_code} {attach_resp.text[:200]}")
-        st.success("📎 Attachments uploaded, fields synced & Test Ticket linked")
+    st.success("📎 Attachments uploaded, fields synced & Test Ticket linked")
 
     # Transition Test ticket to Failed (Jira)
     transitioned = transition_issue_to_failed(test_ticket.strip(), auth)
     if transitioned:
         st.success("✅ Test ticket transitioned to 'Failed'.")
 
-  
+    # --- Zephyr operations: only if defect exists & auth ok ---
+    try:
+        # Only attempt Zephyr linking if we have an issue_key
+        if "issue_key" in st.session_state:
+            execution_obj = find_latest_execution(test_ticket.strip(), auth)
+            if not execution_obj:
+                st.warning("No Zephyr execution found for this Test.")
+            else:
+                try:
+                    link_defect_to_execution_cloud(execution_obj, issue_key, auth)
+                    st.success("🔗 Defect linked to Zephyr execution.")
+                except Exception as e:
+                    st.warning(f"Failed to link defect to Zephyr execution: {e}")
+    except Exception as e:
+        st.warning(f"Zephyr operations failed: {e}")
 
-# --- Link defect to Zephyr execution ---
-try:
-    execution_obj = find_latest_execution(test_ticket.strip(), auth)
+    # Optional step update
+    try:
+        if execution_obj is not None and ENABLE_STEP_UPDATE:
+            fail_zephyr_step(execution_obj.get('id'), failed_step_num)
+            st.success("❗ Failed step updated in Zephyr.")
+        elif execution_obj is not None:
+            st.info("Step update skipped (ENABLE_STEP_UPDATE = False).")
+    except Exception as e:
+        st.warning(f"Could not update Zephyr failed step: {e}")
 
-    if not execution_obj:
-        st.warning("No Zephyr execution found for this Test.")
-    else:
-        try:
-            link_defect_to_execution_cloud(execution_obj, issue_key, auth)
-            st.success("🔗 Defect linked to Zephyr execution.")
-        except Exception as e:
-            st.warning(f"Failed to link defect to Zephyr execution: {e}")
+    # Execution status to FAIL
+    try:
+        if execution_obj is not None:
+            fail_execution_cloud(execution_obj)
+            st.success("🟥 Zephyr execution status set to FAIL (Zephyr).")
+    except Exception as e:
+        st.warning(f"Failed to update Zephyr execution status: {e}")
 
-except Exception as e:
-    st.warning(f"Zephyr operations failed: {e}")
-
-# --- (Optional) Update step result in Zephyr ---
-try:
-    if execution_obj and ENABLE_STEP_UPDATE:
-        fail_zephyr_step(execution_obj.get('id'), failed_step_num)
-        st.success("❗ Failed step updated in Zephyr.")
-    elif execution_obj:
-        st.info("Step update skipped (ENABLE_STEP_UPDATE = False).")
-except Exception as e:
-    st.warning(f"Could not update Zephyr failed step: {e}")
-
-# --- Set overall execution status to FAIL in Zephyr ---
-try:
-    if execution_obj:
-        fail_execution_cloud(execution_obj)
-        st.success("🟥 Zephyr execution status set to FAIL (Zephyr).")
-except Exception as e:
-    st.warning(f"Failed to update Zephyr execution status: {e}")
 
 # --- Safe link rendering (works across reruns) ---
 ik = st.session_state.get("issue_key")
