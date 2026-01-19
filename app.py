@@ -1461,6 +1461,9 @@ if st.button("🚀 Create Defect"):
     
  # Link defect ↔ test ticket
     link_payload = {"type": {"name": "Relates"}, "inwardIssue": {"key": test_ticket.strip()}, "outwardIssue": {"key": issue_key}}
+   
+# --- Safe Linking to Avoid Duplicate Defects ---
+if not _relates_link_exists(test_ticket.strip(), issue_key, auth):
     link_resp = requests.post(
         f"{JIRA_BASE_URL}/rest/api/3/issueLink",
         json=link_payload,
@@ -1468,6 +1471,11 @@ if st.button("🚀 Create Defect"):
         auth=auth,
         timeout=30
     )
+    if link_resp.status_code not in (200, 201, 204):
+        st.warning(f"Linking returned {link_resp.status_code}: {link_resp.text[:300]}")
+else:
+    st.info("🔗 Defect already linked to test ticket — skipping duplicate.")
+
     if link_resp.status_code not in (200, 201, 204):
         st.warning(f"Linking returned {link_resp.status_code}: {link_resp.text[:300]}")
 
