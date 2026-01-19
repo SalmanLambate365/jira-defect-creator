@@ -1432,30 +1432,6 @@ if st.button("🚀 Create Defect"):
     issue_key = create_resp.json()["key"]
     st.session_state["issue_key"] = issue_key
     st.success(f"✅ Defect created: {issue_key}")
-    
-# --- Safe Linking to Avoid Duplicate Relates Links ---
-test_key_clean = test_ticket.strip()
-
-if not _relates_link_exists(test_key_clean, issue_key, auth):
-    link_payload = {
-        "type": {"name": "Relates"},
-        "inwardIssue": {"key": test_key_clean},
-        "outwardIssue": {"key": issue_key}
-    }
-    link_resp = requests.post(
-        f"{JIRA_BASE_URL}/rest/api/3/issueLink",
-        json=link_payload,
-        headers=headers_json(),
-        auth=auth,
-        timeout=30
-    )
-    if link_resp.status_code not in (200, 201, 204):
-        st.warning(
-            f"Linking returned {link_resp.status_code}: {link_resp.text[:300]}"
-        )
-else:
-    st.info("🔗 Defect already linked — skipping duplicate creation.")
-
 
     # -- Update copied fields on the new defect --
     edit_fields = {}
@@ -1483,6 +1459,17 @@ else:
     ok, msg = try_set_defect_parent_to_epic(issue_key, copied, auth)
     st.info(f"Epic link: {msg}")
     
+ # Link defect ↔ test ticket
+    link_payload = {"type": {"name": "Relates"}, "inwardIssue": {"key": test_ticket.strip()}, "outwardIssue": {"key": issue_key}}
+    link_resp = requests.post(
+        f"{JIRA_BASE_URL}/rest/api/3/issueLink",
+        json=link_payload,
+        headers=headers_json(),
+        auth=auth,
+        timeout=30
+    )
+    if link_resp.status_code not in (200, 201, 204):
+        st.warning(f"Linking returned {link_resp.status_code}: {link_resp.text[:300]}")
 
 
     # --- Upload attachments (if the user added any)
