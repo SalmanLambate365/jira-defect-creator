@@ -442,6 +442,55 @@ def zephyr_post(relative_path, json_body=None, query_params=None):
 def zephyr_put(relative_path, json_body=None, query_params=None):
     return zephyr_request("PUT", relative_path, query_params=query_params, json_body=json_body)
 
+
+# ========= ZEPHYR EXECUTION DEFECT HELPERS =========
+
+def get_execution_details(execution_id):
+    """
+    Fetch full execution details so we can inspect its existing defects.
+    """
+    rel = f"/public/rest/api/1.0/execution/{execution_id}"
+    return zephyr_get(rel)  # returns dict or text
+
+
+def extract_defect_ids(execution_detail, auth=None):
+    """
+    Normalize the 'defects' on an execution into a list of numeric Jira issue IDs.
+    Handles shapes like: [12345], [{'id':12345}], [{'issueId':12345}], [{'key':'CT-123'}].
+    If only keys are present, we resolve them to numeric IDs (requires auth).
+    """
+    out = set()
+    if not isinstance(execution_detail, dict):
+        return []
+
+    defects = execution_detail.get("defects") or []
+    for d in defects:
+        # integers or strings like "12345"
+        if isinstance(d, int):
+            out.add(int(d))
+            continue
+        if isinstance(d, str) and d.isdigit():
+            out.add(int(d))
+            continue
+        # common dict shapes
+        if isinstance(d, dict):
+            if "id" in d and str(d["id"]).isdigit():
+                out.add(int(d["id"]))
+                continue
+            if "issueId" in d and str(d["issueId"]).isdigit():
+                out.add(int(d["issueId"]))
+                continue
+            # last resort: we only have a key -> resolve to numeric
+            if auth and "key" in d and d["key"]:
+                try:
+                    nid = jira_issue_id_from_key(d["key"], auth)
+                    if str(nid).isdigit():
+                        out.add(int(nid))
+                except Exception:
+                    pass
+    return sorted(out)
+
+
 # ============================================================
 # FETCH FIELDS FROM TEST TICKET → TEMP STORE
 # ============================================================
@@ -851,23 +900,35 @@ def find_latest_execution(jira_test_key, auth):
         st.warning(f"ZQL API failed: {e}")
     return None
 
+
 def link_defect_to_execution_cloud(execution_obj, defect_issue_key, auth):
     """
-    Zephyr Cloud: link defects by updating the execution (PUT /execution/{id})
-    with full context and 'defects' as a list of numeric Jira issue IDs.
+    Zephyr Cloud: link defects by updating the execution with the *full* list of defect IDs
+    (merge existing + new). This avoids replacing or losing previously linked defects.
     """
     execution_id = execution_obj.get("id")
     if not execution_id:
         raise RuntimeError("Missing execution id.")
+
     project_id = execution_obj.get("projectId")
-    cycle_id   = execution_obj.get("cycleId")
+    cycle_id = execution_obj.get("cycleId")
     version_id = execution_obj.get("versionId", -1)
     test_issue_id = execution_obj.get("issueId")
+
     if test_issue_id is None:
         raise RuntimeError("Execution object missing issueId (Test id).")
 
-    defect_issue_id = jira_issue_id_from_key(defect_issue_key, auth)  # numeric id of the Defect
+    # Resolve numeric id of the Defect to be added
+    new_defect_numeric_id = jira_issue_id_from_key(defect_issue_key, auth)
 
+    # 1) Read existing defects on this execution
+    details = get_execution_details(execution_id)
+    existing_ids = extract_defect_ids(details, auth=auth)
+
+    # 2) Merge + de-duplicate
+    merged_ids = list(dict.fromkeys([*existing_ids, int(new_defect_numeric_id)]))
+
+    # 3) PUT full payload back (with the merged list)
     rel = f"/public/rest/api/1.0/execution/{execution_id}"
     body = {
         "id": str(execution_id),
@@ -875,12 +936,23 @@ def link_defect_to_execution_cloud(execution_obj, defect_issue_key, auth):
         "issueId": int(test_issue_id),
         "cycleId": str(cycle_id) if cycle_id is not None else None,
         "versionId": version_id if version_id is not None else -1,
-        # IMPORTANT: defects must be numeric Jira ids, not keys like "CT-123"
-        "defects": [int(defect_issue_id)],
-        "updateDefectList": True
+        # Important: send *all* defect ids, not just the new one
+        "defects": merged_ids,
+        "updateDefectList": True,  # kept for tenants that require the flag
     }
     body = {k: v for k, v in body.items() if v is not None}
-    return zephyr_put(rel, json_body=body)
+
+    try:
+        return zephyr_put(rel, json_body=body)
+    except Exception as e:
+        # Optional fallback: if tenant rejects the full payload, try a minimal one with just 'defects'
+        # (Uncomment if needed)
+        # try:
+        #     return zephyr_put(rel, json_body={"defects": merged_ids, "updateDefectList": True})
+        # except Exception:
+        #     pass
+        raise
+
 
 
 def fail_zephyr_step(execution_id, failed_step_num):
