@@ -1483,7 +1483,8 @@ if st.button("🚀 Create Defect"):
         st.success("✅ Test ticket transitioned to 'Failed'.")
 
   
-# --- Link defect to Zephyr execution ---
+
+# ---- Link defect to Zephyr execution ----
 try:
     execution_obj = find_latest_execution(test_ticket.strip(), auth)
 
@@ -1493,24 +1494,26 @@ try:
         try:
             link_defect_to_execution_cloud(execution_obj, issue_key, auth)
             st.success("🔗 Defect linked to Zephyr execution.")
-        
-
-
-        # ---- NEW: also create one standard 'Relates' link on the Test (idempotent) ----
-        try:
-            if CREATE_STANDARD_TEST_LINK:
-                tkey = test_ticket.strip()
-                if not _relates_link_exists(tkey, issue_key, auth):
-                    if _create_relates_link(tkey, issue_key, auth):
-                        st.info("🔗 Also created standard 'Relates' link on the Test ticket.")
-                    else:
-                        st.warning("Could not create the standard Test ↔ Defect link (non-fatal).")
-                # else: link already exists; do nothing
         except Exception as e:
-            st.warning(f"Standard link step skipped due to error: {e}")
+            st.warning(f"Failed to link defect to Zephyr execution: {e}")
+
+except Exception as e:
+    st.warning(f"Zephyr operations failed: {e}")
+
+# ---- NEW: also create one standard 'Relates' link on the Test (idempotent) ----
+try:
+    if CREATE_STANDARD_TEST_LINK:
+        tkey = test_ticket.strip()
+        if not _relates_link_exists(tkey, issue_key, auth):
+            if _create_relates_link(tkey, issue_key, auth):
+                st.info("🔗 Also created standard 'Relates' link on the Test ticket.")
+            else:
+                st.warning("Could not create the standard Test ↔ Defect link (non-fatal).")
+        # else: link already exists; do nothing
+except Exception as e:
+    st.warning(f"Standard link step skipped due to error: {e}")
 
             
-
             # Step update (disabled by default)
             try:
                 if ENABLE_STEP_UPDATE:
