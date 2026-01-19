@@ -1482,17 +1482,23 @@ if st.button("🚀 Create Defect"):
     if transitioned:
         st.success("✅ Test ticket transitioned to 'Failed'.")
 
-    # Zephyr: link defect to latest execution & set execution to FAIL
-    try:
-        execution_obj = find_latest_execution(test_ticket.strip(), auth)
-        if not execution_obj:
-            st.warning("No Zephyr execution found for this Test.")
-        else:
-            try:
-                link_defect_to_execution_cloud(execution_obj, issue_key, auth)
-                st.success("🔗 Defect linked to Zephyr execution.")
-                
-        st.success("🔗 Defect linked to Zephyr execution.")
+  
+# --- Link defect to Zephyr execution ---
+try:
+    execution_obj = find_latest_execution(test_ticket.strip(), auth)
+
+    if not execution_obj:
+        st.warning("No Zephyr execution found for this Test.")
+    else:
+        try:
+            link_defect_to_execution_cloud(execution_obj, issue_key, auth)
+            st.success("🔗 Defect linked to Zephyr execution.")
+        except Exception as e:
+            st.warning(f"Failed to link defect to Zephyr execution: {e}")
+
+except Exception as e:
+    st.warning(f"Zephyr operations failed: {e}")
+
 
         # ---- NEW: also create one standard 'Relates' link on the Test (idempotent) ----
         try:
