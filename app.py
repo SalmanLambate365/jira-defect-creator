@@ -1469,17 +1469,31 @@ if st.button("🚀 Create Defect"):
     ok, msg = try_set_defect_parent_to_epic(issue_key, copied, auth)
     st.info(f"Epic link: {msg}")
 
-    # Link defect ↔ test ticket
-    link_payload = {"type": {"name": "Relates"}, "inwardIssue": {"key": test_ticket.strip()}, "outwardIssue": {"key": issue_key}}
-    link_resp = requests.post(
-        f"{JIRA_BASE_URL}/rest/api/3/issueLink",
-        json=link_payload,
-        headers=headers_json(),
-        auth=auth,
-        timeout=30
-    )
-    if link_resp.status_code not in (200, 201, 204):
-        st.warning(f"Linking returned {link_resp.status_code}: {link_resp.text[:300]}")
+   
+# ---- Link defect ↔ test ticket (avoid duplicates) ----
+try:
+    if not _relates_link_exists(test_ticket.strip(), issue_key, auth):
+        link_payload = {
+            "type": {"name": "Relates"},
+            "inwardIssue": {"key": test_ticket.strip()},
+            "outwardIssue": {"key": issue_key}
+        }
+        link_resp = requests.post(
+            f"{JIRA_BASE_URL}/rest/api/3/issueLink",
+            json=link_payload,
+            headers=headers_json(),
+            auth=auth,
+            timeout=30
+        )
+        if link_resp.status_code not in (200,201,204):
+            st.warning(f"Linking returned {link_resp.status_code}: {link_resp.text[:300]}")
+        else:
+            st.success("🔗 Linked Defect ↔ Test Ticket")
+    else:
+        st.info("🔁 Link already exists — skipping duplicate.")
+except Exception as e:
+    st.warning(f"Linking failed: {e}")
+
 
     # Attachments
     if uploaded_files:
