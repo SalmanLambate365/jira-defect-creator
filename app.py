@@ -1484,7 +1484,8 @@ if st.button("🚀 Create Defect"):
 
   
 
-# ---- Link defect to Zephyr execution ----
+
+# --- Link defect to Zephyr execution ---
 try:
     execution_obj = find_latest_execution(test_ticket.strip(), auth)
 
@@ -1500,7 +1501,7 @@ try:
 except Exception as e:
     st.warning(f"Zephyr operations failed: {e}")
 
-# ---- NEW: also create one standard 'Relates' link on the Test (idempotent) ----
+# --- Also create one standard 'Relates' link on the Test (idempotent) ---
 try:
     if CREATE_STANDARD_TEST_LINK:
         tkey = test_ticket.strip()
@@ -1512,6 +1513,7 @@ try:
         # else: link already exists; do nothing
 except Exception as e:
     st.warning(f"Standard link step skipped due to error: {e}")
+
 
             
             # Step update (disabled by default)
