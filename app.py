@@ -445,12 +445,43 @@ def zephyr_put(relative_path, json_body=None, query_params=None):
 
 # ========= ZEPHYR EXECUTION DEFECT HELPERS =========
 
-def get_execution_details(execution_id):
+# ========= ZEPHYR EXECUTION DEFECT HELPERS =========
+
+def get_execution_details(execution_obj):
     """
-    Fetch full execution details so we can inspect its existing defects.
+    Fetch full execution details with required query params for tenants that enforce them.
+    Accepts the *execution object* (not just the id) so we can pass projectId/issueId.
     """
+    if not isinstance(execution_obj, dict):
+        raise RuntimeError("get_execution_details expects the execution object (dict)")
+
+    execution_id = execution_obj.get("id")
+    project_id   = execution_obj.get("projectId")
+    issue_id     = execution_obj.get("issueId")
+
+    if not execution_id:
+        raise RuntimeError("Missing execution id.")
+    if project_id is None:
+        # Some tenants are strict; better to fail fast with a helpful message
+        raise RuntimeError("Execution object missing projectId; cannot fetch execution details.")
+
     rel = f"/public/rest/api/1.0/execution/{execution_id}"
-    return zephyr_get(rel)  # returns dict or text
+
+    # Primary attempt: provide projectId (required on your tenant). Include issueId when we have it.
+    params = {"projectId": project_id}
+    if issue_id is not None:
+        params["issueId"] = int(issue_id)
+
+    try:
+        return zephyr_get(rel, query_params=params)
+    except Exception:
+        # Fallback attempts for non-strict tenants (harmless if rejected)
+        try:
+            return zephyr_get(rel, query_params={"projectId": project_id})
+        except Exception:
+            # Last resort (original, not recommended on strict tenants)
+            return zephyr_get(rel)
+
 
 
 def extract_defect_ids(execution_detail, auth=None):
@@ -904,54 +935,46 @@ def find_latest_execution(jira_test_key, auth):
 def link_defect_to_execution_cloud(execution_obj, defect_issue_key, auth):
     """
     Zephyr Cloud: link defects by updating the execution with the *full* list of defect IDs
-    (merge existing + new). This avoids replacing or losing previously linked defects.
+    (merge existing + new). Uses projectId/issueId when fetching details to satisfy strict tenants.
     """
     execution_id = execution_obj.get("id")
     if not execution_id:
         raise RuntimeError("Missing execution id.")
 
-    project_id = execution_obj.get("projectId")
-    cycle_id = execution_obj.get("cycleId")
-    version_id = execution_obj.get("versionId", -1)
+    project_id   = execution_obj.get("projectId")
+    cycle_id     = execution_obj.get("cycleId")
+    version_id   = execution_obj.get("versionId", -1)
     test_issue_id = execution_obj.get("issueId")
 
     if test_issue_id is None:
         raise RuntimeError("Execution object missing issueId (Test id).")
+    if project_id is None:
+        raise RuntimeError("Execution object missing projectId; cannot update execution defects.")
 
     # Resolve numeric id of the Defect to be added
     new_defect_numeric_id = jira_issue_id_from_key(defect_issue_key, auth)
 
-    # 1) Read existing defects on this execution
-    details = get_execution_details(execution_id)
+    # 1) Read existing defects on this execution (with required query params)
+    details = get_execution_details(execution_obj)
     existing_ids = extract_defect_ids(details, auth=auth)
 
     # 2) Merge + de-duplicate
     merged_ids = list(dict.fromkeys([*existing_ids, int(new_defect_numeric_id)]))
 
-    # 3) PUT full payload back (with the merged list)
+    # 3) PUT full payload back (with the merged list and full execution context)
     rel = f"/public/rest/api/1.0/execution/{execution_id}"
     body = {
         "id": str(execution_id),
-        "projectId": project_id,
+        "projectId": int(project_id),
         "issueId": int(test_issue_id),
         "cycleId": str(cycle_id) if cycle_id is not None else None,
-        "versionId": version_id if version_id is not None else -1,
-        # Important: send *all* defect ids, not just the new one
+        "versionId": int(version_id) if version_id is not None else -1,
         "defects": merged_ids,
-        "updateDefectList": True,  # kept for tenants that require the flag
+        "updateDefectList": True,
     }
     body = {k: v for k, v in body.items() if v is not None}
 
-    try:
-        return zephyr_put(rel, json_body=body)
-    except Exception as e:
-        # Optional fallback: if tenant rejects the full payload, try a minimal one with just 'defects'
-        # (Uncomment if needed)
-        # try:
-        #     return zephyr_put(rel, json_body={"defects": merged_ids, "updateDefectList": True})
-        # except Exception:
-        #     pass
-        raise
+    return zephyr_put(rel, json_body=body)
 
 
 
