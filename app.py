@@ -366,6 +366,53 @@ def jira_project_id_from_key(project_key, auth):
     r.raise_for_status()
     return int(r.json()["id"])
 
+
+# ========= JIRA ISSUE-LINK HELPERS =========
+
+def _relates_link_exists(a_key: str, b_key: str, auth) -> bool:
+    """
+    Return True if a standard 'Relates' link already exists between a_key and b_key.
+    Checks the issuelinks on the 'a_key' issue for an entry pointing to b_key.
+    """
+    url = f"{JIRA_BASE_URL}/rest/api/3/issue/{a_key}"
+    r = requests.get(
+        url,
+        params={"fields": "issuelinks"},
+        headers={"Accept": "application/json"},
+        auth=auth,
+        timeout=30
+    )
+    if r.status_code != 200:
+        return False
+    links = ((r.json().get("fields") or {}).get("issuelinks") or [])
+    for lk in links:
+        if (lk.get("type") or {}).get("name") != "Relates":
+            continue
+        other = lk.get("outwardIssue") or lk.get("inwardIssue") or {}
+        if other.get("key") == b_key:
+            return True
+    return False
+
+
+def _create_relates_link(a_key: str, b_key: str, auth) -> bool:
+    """
+    Create a symmetric 'Relates' issue link between a_key and b_key.
+    Returns True on success.
+    """
+    payload = {
+        "type": {"name": "Relates"},
+        "inwardIssue": {"key": a_key},
+        "outwardIssue": {"key": b_key},
+    }
+    resp = requests.post(
+        f"{JIRA_BASE_URL}/rest/api/3/issueLink",
+        json=payload,
+        headers=headers_json(),
+        auth=auth,
+        timeout=30
+    )
+    return resp.status_code in (200, 201, 204)
+
 # -- Field ID cache & resolver --
 _FIELD_ID_CACHE = {}
 def get_field_id_by_name(field_name, auth):
@@ -1444,6 +1491,22 @@ if st.button("🚀 Create Defect"):
             try:
                 link_defect_to_execution_cloud(execution_obj, issue_key, auth)
                 st.success("🔗 Defect linked to Zephyr execution.")
+                
+        st.success("🔗 Defect linked to Zephyr execution.")
+
+        # ---- NEW: also create one standard 'Relates' link on the Test (idempotent) ----
+        try:
+            if CREATE_STANDARD_TEST_LINK:
+                tkey = test_ticket.strip()
+                if not _relates_link_exists(tkey, issue_key, auth):
+                    if _create_relates_link(tkey, issue_key, auth):
+                        st.info("🔗 Also created standard 'Relates' link on the Test ticket.")
+                    else:
+                        st.warning("Could not create the standard Test ↔ Defect link (non-fatal).")
+                # else: link already exists; do nothing
+        except Exception as e:
+            st.warning(f"Standard link step skipped due to error: {e}")
+
             except Exception as e:
                 st.warning(f"Failed to link defect to Zephyr execution: {e}")
 
