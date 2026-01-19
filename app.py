@@ -1496,9 +1496,6 @@ try:
         except Exception as e:
             st.warning(f"Failed to link defect to Zephyr execution: {e}")
 
-except Exception as e:
-    st.warning(f"Zephyr operations failed: {e}")
-
 
         # ---- NEW: also create one standard 'Relates' link on the Test (idempotent) ----
         try:
